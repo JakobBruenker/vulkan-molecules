@@ -8,17 +8,19 @@
            , ImportQualifiedPost
            , NamedFieldPuns
            , TemplateHaskell
-           , UndecidableInstances
            , RankNTypes
            , TypeApplications
+           , CPP
 #-}
+
+#include "macros.h"
 
 module Main where
 
 import RIO
 
 import Options.Applicative as Opt hiding (action)
-import Lens.Micro.Platform
+import System.Environment (getProgName)
 
 import Graphics.UI.GLFW qualified as GLFW
 -- import Vulkan
@@ -34,33 +36,33 @@ instance Show AppException where
     GLFWInitError -> "Failed to initialize GLFW."
     GLFWWindowError -> "Failed to create window."
 
-data WindowSize = MkWindowSize { _width  :: !Natural
-                               , _height :: !Natural
+data WindowSize = MkWindowSize { width  :: !Natural
+                               , height :: !Natural
                                }
+class HasWindowSize env where
+  windowSizeL :: Lens' env WindowSize
+  RIO_DATA_FIELD(windowSizeL, Natural, widthL, width)
+  RIO_DATA_FIELD(windowSizeL, Natural, heightL, height)
 
--- Not using makeClassy since its windowSize method would clash with HasConfig
-makeLenses ''WindowSize
+instance HasWindowSize WindowSize where
+  windowSizeL = id
 
 data Options = MkOptions { optWidth   :: !Natural
                          , optHeight  :: !Natural
                          , optVerbose :: !Bool
                          }
 
-data Config = MkConfig { _windowSize :: !WindowSize }
-
-makeClassy ''Config
+data Config = MkConfig { windowSize :: !WindowSize }
+RIO_BASIC_CLASS(HasWindowSize env, HasConfig, Config, configL)
+RIO_BASIC_INSTANCE(HasWindowSize, Config, windowSizeL, windowSize)
 
 data App = MkApp { appLogFunc :: !LogFunc
                  , appConfig  :: !Config
                  }
-class (HasLogFunc env, HasConfig env) => HasApp env where
-  env :: Lens' env App
-instance HasLogFunc App where
-  logFuncL = lens appLogFunc \x y -> x {appLogFunc = y}
-instance HasConfig App where
-  config = lens appConfig \x y -> x {appConfig = y}
-instance HasApp App where
-  env = id
+RIO_BASIC_CLASS((HasLogFunc env, HasConfig env), HasApp, App, appL)
+RIO_TRANS_INSTANCE(HasWindowSize, App, windowSizeL, configL)
+RIO_BASIC_INSTANCE(HasLogFunc, App, logFuncL, appLogFunc)
+RIO_BASIC_INSTANCE(HasConfig, App, configL, appConfig)
 
 mkConfig :: Options -> Config
 mkConfig (MkOptions w h _) = MkConfig (MkWindowSize w h)
@@ -87,7 +89,7 @@ options = MkOptions
 main :: IO ()
 main = do
   opts <- execParser (info (options <**> helper) fullDesc)
-  logOptions <- setLogUseTime True <$> logOptionsHandle stdout (optVerbose opts)
+  logOptions <- logOptionsHandle stdout (optVerbose opts)
   withLogFunc logOptions \logFunc -> do
     let app = MkApp { appLogFunc = logFunc
                     , appConfig = mkConfig opts
@@ -105,14 +107,15 @@ withGLFW action = bracket
 
 withWindow :: HasConfig env => (GLFW.Window -> RIO env a) -> RIO env a
 withWindow action = do
-  size <- view $ config.windowSize
+  size <- view windowSizeL
   bracket
     do liftIO do
         mapM_ GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
                               , GLFW.WindowHint'Resizable False
                               ]
-        let asInt l = fromIntegral $ size^.l
-        GLFW.createWindow (asInt width) (asInt height) "Vulkan" Nothing Nothing
+        let asInt = fromIntegral . ($ size)
+        progName <- getProgName
+        GLFW.createWindow (asInt width) (asInt height) progName Nothing Nothing
     do liftIO . mapM_ GLFW.destroyWindow
     do maybe (throwIO GLFWWindowError) action
 
