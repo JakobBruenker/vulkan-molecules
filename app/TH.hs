@@ -1,11 +1,16 @@
-{-# LANGUAGE BlockArguments, LambdaCase, TupleSections, TemplateHaskellQuotes #-}
+{-# LANGUAGE BlockArguments
+           , LambdaCase
+           , TupleSections
+           , TemplateHaskellQuotes
+           , ImportQualifiedPost
+#-}
 
 module TH where
 
-import           RIO
-import qualified RIO.Char as C
-import           RIO.Lens
-import           Language.Haskell.TH
+import RIO
+import RIO.Char qualified as C
+import RIO.Lens
+import Language.Haskell.TH
 
 type Field = VarBangType
 
@@ -16,14 +21,14 @@ makeRioClassy tyConName = do
     TyConI (NewtypeD _ _ [] _ (RecC _ fields) _) -> pure fields
     _ -> fail "Unsupported declaration"
   (orphanFields, parentedFields) <-
-    partitionEithers . map (\(x, my) -> maybe (Left x) (Right . (x,)) my) <$> mapM attachClass fields
+    partitionEithers . map (\(x, my) -> maybe (Left x) (Right . (x,)) my) <$>
+    mapM attachClass fields
   superInsts <- concat <$> mapM mkSuperInsts parentedFields
   insts <- mapM mkInstance fields
   let result = [thisClass fields, thisInstance]
             <> map mkClass orphanFields
             <> insts
             <> superInsts
-  -- traceShowM . ppr $ result -- uncomment to print the generated code
   pure result
   where
     tyCon :: Type

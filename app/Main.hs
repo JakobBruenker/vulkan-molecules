@@ -1,165 +1,186 @@
 {-# LANGUAGE NoImplicitPrelude
            , OverloadedStrings
+           , OverloadedLists
            , LambdaCase
+           , MultiWayIf
            , ViewPatterns
            , FlexibleContexts
            , FlexibleInstances
            , BlockArguments
            , ImportQualifiedPost
-           , NamedFieldPuns
            , TemplateHaskell
            , RankNTypes
            , TypeApplications
+           , DerivingVia
            , DuplicateRecordFields
+           , NamedFieldPuns
+           , ScopedTypeVariables
+           , DataKinds
 #-}
 
 module Main where
 
 import RIO
+import RIO.List qualified as L
+import RIO.NonEmpty qualified as NE
 
--- import Options.Applicative as Opt hiding (action)
--- import System.Environment (getProgName)
+import Control.Lens (views, (??))
+import Control.Monad.Extra
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B.C
+import Data.Vector qualified as V
+import Options.Applicative hiding (action, info)
+import Options.Applicative qualified as Opt
+import System.Environment (getProgName)
 
--- import Graphics.UI.GLFW qualified as GLFW
--- -- import Vulkan
+import Graphics.UI.GLFW qualified as GLFW
+import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
+                     , IOSSurfaceCreateInfoMVK(view)
+                     )
+import Vulkan.Zero
 
 import TH
+
+data AppException
+  = GLFWInitError
+  | GLFWWindowError
+  | VkGenericError Result
+  | VkValidationLayersNotSupported (NonEmpty ByteString)
+
+instance Exception AppException
+
+instance Show AppException where
+  show = \case
+    GLFWInitError -> "Failed to initialize GLFW."
+    GLFWWindowError -> "Failed to create window."
+    VkGenericError r -> "Vulkan returned error: " <> show r
+    VkValidationLayersNotSupported ls ->
+      "Requested validation layer" <> num <> " not supported: " <>
+        (L.intercalate ", " . map B.C.unpack . toList) ls
+      where num = case ls of
+              _ :| [] -> " is"
+              _       -> "s are"
+
+data Options = MkOptions { optWidth            :: !Natural
+                         , optHeight           :: !Natural
+                         , optVerbose          :: !Bool
+                         , optValidationLayers :: !Bool
+                         }
 
 data WindowSize = MkWindowSize { windowWidth  :: !Natural
                                , windowHeight :: !Natural
                                }
 makeRioClassy ''WindowSize
 
-newtype Email = MkEmail { emailString :: String }
-makeRioClassy ''Email
-
-data Config = MkConfig { windowSize   :: !WindowSize
-                       , verbose      :: !Bool
-                       , studentEmail :: !Email
-                       , teacherEmail :: !Email
+data Config = MkConfig { windowSize             :: !WindowSize
+                       , enableValidationLayers :: !Bool
                        }
 makeRioClassy ''Config
 
-data App = MkApp { config  :: !Config
-                 , logFunc :: !LogFunc
+data App = MkApp { logFunc :: !LogFunc
+                 , config  :: !Config
                  }
 makeRioClassy ''App
 
-newtype OtherStuff = MkOtherStuff { stuffContent :: String }
-makeRioClassy ''OtherStuff
+data VulkanApp = MkVulkanApp { app    :: !App
+                             , window :: !GLFW.Window
+                             , inst   :: !Instance
+                             -- , device :: !Device
+                             }
+makeRioClassy ''VulkanApp
 
-data SuperApp = MkSuperApp { saApp        :: !App
-                           , saOtherStuff :: !OtherStuff
-                           }
-makeRioClassy ''SuperApp
+mkConfig :: Options -> Config
+mkConfig (MkOptions w h _ l) = MkConfig (MkWindowSize w h) l
+
+options :: Parser Options
+options = MkOptions
+  <$> option auto
+      ( long "width"
+     <> help "The width of the window"
+     <> showDefault
+     <> Opt.value 800
+     <> metavar "WIDTH")
+  <*> option auto
+      ( long "height"
+     <> help "The height of the window"
+     <> showDefault
+     <> Opt.value 600
+     <> metavar "HEIGHT")
+  <*> switch
+      ( long "verbose"
+     <> short 'v'
+     <> help "Print verbose log messages")
+  <*> switch
+      ( long "val-layers"
+     <> short 'l'
+     <> help "Enable Vulkan validation layers")
 
 main :: IO ()
-main = pure ()
+main = do
+  opts <- execParser (Opt.info (options <**> helper) fullDesc)
+  logOptions <- logOptionsHandle stdout (optVerbose opts)
+  withLogFunc logOptions \logFunc -> do
+    let app = MkApp { logFunc = logFunc
+                    , config = mkConfig opts
+                    }
+    runRIO app $ catch runApp \e -> do
+      logError $ displayShow @SomeException e
+      exitFailure
 
--- data AppException
---   = GLFWInitError
---   | GLFWWindowError
+withGLFW :: RIO env a -> RIO env a
+withGLFW action = bracket
+  do liftIO GLFW.init
+  do const $ liftIO GLFW.terminate
+  \case success | success   -> action
+                | otherwise -> throwIO GLFWInitError
 
--- instance Exception AppException
+withWindow :: HasWindowSize env => (GLFW.Window -> RIO env a) -> RIO env a
+withWindow action = do
+  width <- views windowWidthL fromIntegral
+  height <- views windowHeightL fromIntegral
+  bracket
+    do liftIO do
+         mapM_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
+                                   , GLFW.WindowHint'Resizable False
+                                   ]
+         progName <- getProgName
+         GLFW.createWindow width height progName Nothing Nothing
+    do liftIO . mapM_ GLFW.destroyWindow
+    do maybe (throwIO GLFWWindowError) action
 
--- instance Show AppException where
---   show = \case
---     GLFWInitError -> "Failed to initialize GLFW."
---     GLFWWindowError -> "Failed to create window."
+mainLoop :: HasVulkanApp env => RIO env ()
+mainLoop = whileM do
+  liftIO GLFW.waitEvents -- XXX might need pollEvents instead
+  liftIO . fmap not . GLFW.windowShouldClose =<< view windowL
 
--- data WindowSize = MkWindowSize { width  :: !Natural
---                                , height :: !Natural
---                                }
--- class HasWindowSize env where
---   windowSizeL :: Lens' env WindowSize
---   RIO_DATA_FIELD(windowSizeL, Natural, widthL, width)
---   RIO_DATA_FIELD(windowSizeL, Natural, heightL, height)
+validationLayers :: HasEnableValidationLayers env => RIO env [ByteString]
+validationLayers = view enableValidationLayersL >>= \case
+    False -> pure []
+    True  -> do
+      enumerateInstanceLayerProperties >>= \case
+        (SUCCESS, properties) -> do
+          case NE.nonEmpty $ filter (not . (properties `hasLayer`)) layers of
+            Nothing          -> pure layers
+            Just unsupported -> throwIO (VkValidationLayersNotSupported unsupported)
+        (err, _) -> throwIO (VkGenericError err)
+  where
+    hasLayer props = V.elem ?? V.map layerName props
+    layers = ["VK_LAYER_KHRONOS_validation"]
 
--- instance HasWindowSize WindowSize where
---   windowSizeL = id
+runApp :: HasApp env => RIO env ()
+runApp = do
+  logDebug "Started app"
 
--- data Options = MkOptions { optWidth   :: !Natural
---                          , optHeight  :: !Natural
---                          , optVerbose :: !Bool
---                          }
+  enabledExtensionNames <- V.fromList <$>
+    do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
+  enabledLayerNames <- V.fromList <$> validationLayers
+  let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
+      instanceCreateInfo :: InstanceCreateInfo '[] =
+        zero{applicationInfo, enabledExtensionNames, enabledLayerNames}
 
--- data Config = MkConfig { windowSize :: !WindowSize }
--- RIO_BASIC_CLASS(HasWindowSize env, HasConfig, Config, configL)
--- RIO_BASIC_INSTANCE(HasWindowSize, Config, windowSizeL, windowSize)
+  withInstance instanceCreateInfo Nothing bracket \inst ->
+    withGLFW $ withWindow \window -> do
+      logDebug "Successfully initialized GLFW and created window, instance, and device"
+      mapRIO (\env -> MkVulkanApp (env^.appL) window inst) mainLoop
 
--- data App = MkApp { appLogFunc :: !LogFunc
---                  , appConfig  :: !Config
---                  }
--- RIO_BASIC_CLASS((HasLogFunc env, HasConfig env), HasApp, App, appL)
--- RIO_TRANS_INSTANCE(HasWindowSize, App, windowSizeL, configL)
--- RIO_BASIC_INSTANCE(HasLogFunc, App, logFuncL, appLogFunc)
--- RIO_BASIC_INSTANCE(HasConfig, App, configL, appConfig)
-
--- mkConfig :: Options -> Config
--- mkConfig (MkOptions w h _) = MkConfig (MkWindowSize w h)
-
--- options :: Parser Options
--- options = MkOptions
---   <$> option auto
---       ( long "width"
---      <> help "The width of the window"
---      <> showDefault
---      <> Opt.value 800
---      <> metavar "WIDTH")
---   <*> option auto
---       ( long "height"
---      <> help "The height of the window"
---      <> showDefault
---      <> Opt.value 600
---      <> metavar "HEIGHT")
---   <*> switch
---       ( long "verbose"
---      <> short 'v'
---      <> help "Print verbose log messages")
-
--- main :: IO ()
--- main = do
---   opts <- execParser (info (options <**> helper) fullDesc)
---   logOptions <- logOptionsHandle stdout (optVerbose opts)
---   withLogFunc logOptions \logFunc -> do
---     let app = MkApp { appLogFunc = logFunc
---                     , appConfig = mkConfig opts
---                     }
---     runRIO app $ catch run \e -> do
---       logError $ displayShow @SomeException e
---       exitFailure
-
--- withGLFW :: RIO env a -> RIO env a
--- withGLFW action = bracket
---   do liftIO GLFW.init
---   do const $ liftIO GLFW.terminate
---   \case success | success   -> action
---                 | otherwise -> throwIO GLFWInitError
-
--- withWindow :: HasConfig env => (GLFW.Window -> RIO env a) -> RIO env a
--- withWindow action = do
---   size <- view windowSizeL
---   bracket
---     do liftIO do
---         mapM_ GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
---                               , GLFW.WindowHint'Resizable False
---                               ]
---         let asInt = fromIntegral . ($ size)
---         progName <- getProgName
---         GLFW.createWindow (asInt width) (asInt height) progName Nothing Nothing
---     do liftIO . mapM_ GLFW.destroyWindow
---     do maybe (throwIO GLFWWindowError) action
-
--- mainLoop :: HasLogFunc env => GLFW.Window -> RIO env ()
--- mainLoop window = do
---   liftIO GLFW.pollEvents
---   threadDelay 1000
---   unlessM (liftIO $ GLFW.windowShouldClose window) $ mainLoop window
-
--- run :: HasApp env => RIO env ()
--- run = do
---   logInfo "Started app"
-
---   withGLFW $ withWindow mainLoop
-
---   logInfo "Goodbye!"
+  logInfo "Goodbye!"
