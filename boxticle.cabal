@@ -26,6 +26,7 @@ executable boxticle
 
     -- Modules included in this executable, other than Main.
     other-modules:    TH
+                    , Has
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -35,9 +36,11 @@ executable boxticle
                     , optparse-applicative >=0.16.1
                     , GLFW-b >=3.3.0.0
                     , rio >=0.1.20
+                    , microlens >=0.4.12
                     , lens >=5.0.1
                     , extra >=1.7.9
                     , relude >=1.0.0
+                    , tagged >=0.8.6
     hs-source-dirs:   app
     default-language: Haskell2010
     ghc-options:      -Wall
