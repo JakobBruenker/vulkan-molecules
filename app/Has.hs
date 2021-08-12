@@ -26,7 +26,7 @@ import Data.Tagged
 import Data.Type.Equality
 import GHC.TypeLits
 
-import Control.Lens -- XXX don't want this as a dependency
+import Control.Lens hiding (without) -- XXX don't want this as a dependency
 
 -- Requirements
 type Reqs :: Type
@@ -38,7 +38,7 @@ infixr 5 :.:
 type Caps :: [Type] -> Type
 data Caps caps where
   NoCap  :: Caps '[]
-  (:::) :: cap `NotIn` caps => cap -> Caps caps -> Caps (cap:caps)
+  (:..) :: cap `NotIn` caps => cap -> Caps caps -> Caps (cap:caps)
 
 type NoOverlap :: [Type] -> [Type] -> Constraint
 type family NoOverlap ts ts' where
@@ -85,7 +85,7 @@ type family Has caps env where
   Has cap            env = HasCap cap env
 
 tailLens :: Lens' (Caps (cap:caps)) (Caps caps)
-tailLens = lens (\(_ ::: caps) -> caps) \(cap ::: _) caps' -> cap ::: caps'
+tailLens = lens (\(_ :.. caps) -> caps) \(cap :.. _) caps' -> cap :.. caps'
 
 type PayloadFor :: forall k . Type -> k
 type family PayloadFor t where
@@ -103,10 +103,10 @@ instance {-# OVERLAPPABLE #-} PayloadFor cap ~ cap => HasCap cap cap where
   the' = id
 
 instance {-# OVERLAPPING #-} HasCap (Tagged s t) (Caps (Tagged s t:caps)) where
-  the' = lens (\(cap ::: _) -> untag cap) \(_ ::: caps) cap' -> Tagged @s cap' ::: caps
+  the' = lens (\(cap :.. _) -> untag cap) \(_ :.. caps) cap' -> Tagged @s cap' :.. caps
 
 instance {-# OVERLAPS #-} PayloadFor cap ~ cap => HasCap cap (Caps (cap:caps)) where
-  the' = lens (\(cap ::: _) -> cap) \(_ ::: caps) cap' -> cap' ::: caps
+  the' = lens (\(cap :.. _) -> cap) \(_ :.. caps) cap' -> cap' :.. caps
 
 instance {-# OVERLAPPABLE #-} HasCap cap (Caps caps) => HasCap cap (Caps (cap':caps)) where
   the' = tailLens.the' @cap
@@ -129,20 +129,13 @@ class Lookup k t env | env k -> t where
   the :: Lens' env t
 
 instance {-# OVERLAPPING #-} (PayloadFor cap ~ cap, Has cap caps)
-  => Lookup cap cap caps where
+      => Lookup cap cap caps where
   the = the' @cap
 
 -- EnvLookup is here to make the fundep work
 instance {-# OVERLAPPABLE #-} (EnvLookup s caps ~ t, Has (Tagged s t) caps)
-  => Lookup s t caps where
+      => Lookup s t caps where
   the = the' @(Tagged s t)
-
--- XXX Maybe have operators to allow something like
--- env . "foo" : Bool
--- env ... ["foo" : Bool, "bar" : Bool -> Bool]
-type HasTag :: Type -> Type -> Constraint
-type family HasTag env tagged where
-  HasTag env (Tagged tag a) = (EnvLookup tag env ~ a, Has (Tagged tag a) env)
 
 type (.) :: k -> Type -> Constraint
 type family env . t where
@@ -160,7 +153,7 @@ infixr 4 ...
 
 type (:::) = Tagged
 
-infixr 5 :::
+infixr 5 :..
 
 -- XXX example
 bar :: (env ... ["foo" ::: (Bool -> Bool), "bar" ::: Bool, String], MonadReader env m)
@@ -197,18 +190,48 @@ withNotInWitness w x = case w of
 
 (+++) :: NoOverlap caps caps' => Caps caps -> Caps caps' -> Caps (caps ++ caps')
 NoCap +++ caps' = caps'
-((cap :: cap) ::: (caps :: Caps caps)) +++ (caps' :: Caps caps') =
+((cap :: cap) :.. (caps :: Caps caps)) +++ (caps' :: Caps caps') =
   withNotInWitness
     (lemma_notInOverlap @cap @caps @caps' notInWitness)
-    (cap ::: (caps +++ caps'))
+    (cap :.. (caps +++ caps'))
 
 infixr 5 +++
 
-asCap :: t -> Caps '[t]
-asCap = (::: NoCap)
+type Without :: Type -> Type -> Type
+type family Without cap caps where
+  Without cap caps = Without' cap caps caps
 
--- TODO: remove element from list
--- without :: forall cap caps . cap `In` caps => Caps caps -> Caps (Without cap caps)
+type Without' :: Type -> Type -> Type -> Type
+type family Without' cap caps env where
+  Without' cap cap env = Caps '[]
+  Without' cap (Caps (cap:caps)) env = Caps caps
+  Without' cap (Caps (cap':caps)) env = Without'' cap' (Without' cap (Caps caps) env)
+  Without' cap caps env =
+    TypeError (Text "Capability " :<>: ShowType cap :<>:
+               Text " not found in environment " :<>: ShowType env)
+
+type Without'' :: Type -> Type -> Type
+type family Without'' cap caps where
+  Without'' cap (Caps caps) = Caps (cap : caps)
+
+type In :: Type -> Type -> Constraint
+class cap `In` caps where
+  without :: caps -> Without cap caps
+
+instance cap `In` cap where
+  without _ = NoCap
+
+instance {-# OVERLAPPING #-} Without cap (Caps (cap:caps)) ~ Caps caps
+         => cap `In` Caps (cap:caps) where
+  without (_ :.. caps) = caps
+
+instance {-# OVERLAPPABLE #-}
+         ( Without' cap (Caps (cap':caps)) env ~ Without'' cap' (Without' cap (Caps caps) env)
+         , cap `In` Caps caps, Without cap (Caps (cap':caps)) ~ Caps (cap':caps')
+         , Without cap (Caps caps) ~ Caps caps', cap' `NotIn` caps'
+         )
+      => cap `In` (Caps (cap':caps)) where
+  without (cap' :.. caps) = cap' :.. without @cap caps
 
 type Concat :: Type -> Type -> Type
 type family Concat a b where
@@ -226,12 +249,15 @@ instance {-# OVERLAPPING #-} NoOverlap caps caps' => Catable (Caps caps) (Caps c
 instance {-# OVERLAPS #-} ( Concat (Caps caps) cap' ~ Caps (caps ++ '[cap'])
                           , NoOverlap caps '[cap'])
   => Catable (Caps caps) cap' where
-  caps >< cap = caps +++ (cap ::: NoCap)
+  caps >< cap = caps +++ (cap :.. NoCap)
 
 instance {-# OVERLAPS #-} (Concat cap (Caps caps) ~ Caps (cap : caps), cap `NotIn` caps)
   => Catable cap (Caps caps) where
-  cap >< caps = cap ::: caps
+  cap >< caps = cap :.. caps
 
 instance {-# OVERLAPPABLE #-} (Concat cap cap' ~ Caps [cap, cap'], Unequal cap cap')
   => Catable cap cap' where
-  cap >< cap' = cap ::: cap' ::: NoCap
+  cap >< cap' = cap :.. cap' :.. NoCap
+
+with :: Catable caps caps' => caps -> caps' -> Concat caps caps'
+with = (><)
