@@ -20,14 +20,13 @@
 #-}
 
 module Has where
-
+import RIO (MonadReader) -- XXX don't need this
 import Data.Kind
 import Data.Tagged
 import Data.Type.Equality
 import GHC.TypeLits
 
-import Lens.Micro
-import Lens.Micro.Extras
+import Control.Lens -- XXX don't want this as a dependency
 
 -- Requirements
 type Reqs :: Type
@@ -163,15 +162,18 @@ type (:::) = Tagged
 
 infixr 5 :::
 
-bar :: env ... ["foo" ::: (Bool -> Bool), "bar" ::: Bool, String]
-    => env -> (String, Bool)
+-- XXX example
+bar :: (env ... ["foo" ::: (Bool -> Bool), "bar" ::: Bool, String], MonadReader env m)
+    => m (String, Bool)
 bar = do
   f <- view $ the @"foo"
   x <- view $ the @"bar"
   str <- view $ the @String
   pure (str, f x)
 baz :: (String, Bool)
-baz = bar (Tagged @"foo" not ::: "hi" ::: Tagged @"bar" True ::: NoCap)
+baz = bar ('c' >< Tagged @"foo" not >< "hi" >< Tagged @"baz" False >< Tagged @"bar" True)
+baz' :: (String, Bool)
+baz' = bar $ (Tagged @"foo" not >< "hi" >< Tagged @"baz" False >< (5 :: Int) >< Tagged @"bar" True) & the @String <>~ "ho" & the @Int +~ 1
 
 type (++) :: [a] -> [a] -> [a]
 type family (++) xs ys where
@@ -208,13 +210,28 @@ asCap = (::: NoCap)
 -- TODO: remove element from list
 -- without :: forall cap caps . cap `In` caps => Caps caps -> Caps (Without cap caps)
 
--- class Catable a b where
---   type Concat a b
---   (><) :: a -> b -> Concat a b
+type Concat :: Type -> Type -> Type
+type family Concat a b where
+  Concat (Caps caps) (Caps caps') = Caps (caps ++ caps')
+  Concat (Caps caps) cap' = Caps (caps ++ '[cap'])
+  Concat cap (Caps caps') = Caps (cap : caps')
+  Concat cap cap' = Caps [cap, cap']
 
--- instance Catable (Caps caps) (Caps caps') where
---   type Concat (Caps caps) (Caps caps') = Caps (caps ++ caps')
---   (><) = (+++)
+class Catable a b where
+  (><) :: a -> b -> Concat a b
 
--- instance Catable cap (Caps caps) where
---   type Concat cap (Caps caps) = Caps (cap:caps)
+instance {-# OVERLAPPING #-} NoOverlap caps caps' => Catable (Caps caps) (Caps caps') where
+  (><) = (+++)
+
+instance {-# OVERLAPS #-} ( Concat (Caps caps) cap' ~ Caps (caps ++ '[cap'])
+                          , NoOverlap caps '[cap'])
+  => Catable (Caps caps) cap' where
+  caps >< cap = caps +++ (cap ::: NoCap)
+
+instance {-# OVERLAPS #-} (Concat cap (Caps caps) ~ Caps (cap : caps), cap `NotIn` caps)
+  => Catable cap (Caps caps) where
+  cap >< caps = cap ::: caps
+
+instance {-# OVERLAPPABLE #-} (Concat cap cap' ~ Caps [cap, cap'], Unequal cap cap')
+  => Catable cap cap' where
+  cap >< cap' = cap ::: cap' ::: NoCap
