@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -Wno-redundant-constraints #-}
+{-# OPTIONS_GHC -Wno-orphans #-} -- XXX
 {-# LANGUAGE StandaloneKindSignatures
            , DataKinds
            , GADTs
@@ -17,6 +18,8 @@
            , RankNTypes
            , LambdaCase
            , ConstraintKinds
+           , OverloadedLabels -- XXX Don't actually need this here
+           , ImpredicativeTypes
 #-}
 
 module Has where
@@ -25,6 +28,7 @@ import Data.Kind
 import Data.Tagged
 import Data.Type.Equality
 import GHC.TypeLits
+import GHC.OverloadedLabels
 
 import Control.Lens hiding (without) -- XXX don't want this as a dependency
 
@@ -39,6 +43,8 @@ type Caps :: [Type] -> Type
 data Caps caps where
   NoCap  :: Caps '[]
   (:..) :: cap `NotIn` caps => cap -> Caps caps -> Caps (cap:caps)
+
+infixr 5 :..
 
 type NoOverlap :: [Type] -> [Type] -> Constraint
 type family NoOverlap ts ts' where
@@ -76,6 +82,7 @@ type family All c ts where
   All c '[]    = ()
   All c (t:ts) = (c t, All c ts)
 
+-- XXX TODO write better Show instance
 deriving instance All Show caps => Show (Caps caps)
 
 type Has :: k -> Type -> Constraint
@@ -111,35 +118,62 @@ instance {-# OVERLAPS #-} PayloadFor cap ~ cap => HasCap cap (Caps (cap:caps)) w
 instance {-# OVERLAPPABLE #-} HasCap cap (Caps caps) => HasCap cap (Caps (cap':caps)) where
   the' = tailLens.the' @cap
 
-type EnvLookup :: k -> k' -> Type
-type family EnvLookup k env where
-  EnvLookup s env = EnvLookup' s env env
+-- class instead of type family so GHCi displays the types a little more
+-- nicely: The superclass gets rid of a constraint
+-- type HasTag :: k -> Type -> Type -> Constraint
+-- class HasCap (Tagged tag a) env => HasTag tag env a | tag env -> a
+-- instance HasTag tag (Tagged tag a) a
+-- instance {-# OVERLAPPING #-} HasTag tag (Caps (Tagged tag a:env)) a
+-- instance {-# OVERLAPPABLE #-} HasTag tag (Caps env) a
+--   => HasTag tag (Caps (cap:env)) a
 
-type EnvLookup' :: k -> k' -> k' -> Type
-type family EnvLookup' k env' env where
-  EnvLookup' s env' (Tagged s t) = t
-  EnvLookup' s env' (Caps (Tagged s t:env)) = t
-  EnvLookup' s env' (Caps (cap:env)) = EnvLookup s (Caps env)
-  EnvLookup' s env' _ = TypeError (Text "Could not find tag " :<>: ShowType s :<>:
-                                   Text " in the environment " :<>: ShowType env')
+-- XXX Tradeoff: error messages are better with the this definition,
+-- but ghci types are slightly better with the above definition
+-- But would have to also change HasCap to get better error messages for
+-- non-tagged types also
+type HasTag :: k -> Type -> Type -> Constraint
+type HasTag tag env a = HasTag' tag env a env
 
--- XXX
--- class Lookup k t env where
+type HasTag' :: k -> Type -> Type -> Type -> Constraint
+class HasCap (Tagged tag a) env => HasTag' tag env a env' | tag env -> a
+instance HasTag' tag (Tagged tag a) a env'
+instance {-# OVERLAPPING #-} HasTag' tag (Caps (Tagged tag a:env)) a env'
+instance {-# OVERLAPS #-} HasTag' tag (Caps env) a env'
+  => HasTag' tag (Caps (cap:env)) a env'
+instance {-# OVERLAPPABLE #-}
+         -- ( (proxy "Can't find tag", tag, proxy "in", env') ~~ (
+         ( TypeError (Text "Can't find tag " :<>: ShowType tag :<>:
+                      Text " in " :<>: ShowType env')
+         , HasCap (Tagged tag a) env
+         , HasTag' tag env a env')
+      => HasTag' tag env a env'
+
 class Lookup k t env | env k -> t where
   the :: Lens' env t
 
-instance {-# OVERLAPPING #-} (PayloadFor cap ~ cap, Has cap caps)
+instance {-# OVERLAPPING #-} (PayloadFor cap ~ cap, HasCap cap caps)
       => Lookup cap cap caps where
   the = the' @cap
 
--- EnvLookup is here to make the fundep work
-instance {-# OVERLAPPABLE #-} (EnvLookup s caps ~ t, Has (Tagged s t) caps)
-      => Lookup s t caps where
-  the = the' @(Tagged s t)
+instance {-# OVERLAPPABLE #-} HasTag s caps a
+      => Lookup s a caps where
+  the = the' @(Tagged s a)
+
+class HasType a env where
+  it :: Lens' env a
+
+instance (PayloadFor a ~ a, HasCap a env) => HasType a env where
+  it = the' @a
+
+-- XXX TODO: orphan instance, so put this into a separate non-imported module
+instance ( lens ~ ((a -> f a) -> env -> f env), Lookup tag a env
+         , HasCap (Tagged tag a) env, Functor f)
+         => IsLabel tag lens where
+  fromLabel = (the' @(Tagged tag a) @env :: Functor f => (a -> f a) -> env -> f env)
 
 type (.) :: k -> Type -> Constraint
 type family env . t where
-  env . Tagged tag a = (EnvLookup tag env ~ a, HasCap (Tagged tag a) env)
+  env . Tagged tag a = HasTag tag env a
   env . a = HasCap a env
 
 infixr 4 .
@@ -153,19 +187,20 @@ infixr 4 ...
 
 type (:::) = Tagged
 
-infixr 5 :..
+infixr 5 :::
 
 -- XXX example
 bar :: (env ... ["foo" ::: (Bool -> Bool), "bar" ::: Bool, String], MonadReader env m)
-    => m (String, Bool)
+    => m (String, String, Bool)
 bar = do
   f <- view $ the @"foo"
-  x <- view $ the @"bar"
+  x <- view #bar -- XXX
   str <- view $ the @String
-  pure (str, f x)
-baz :: (String, Bool)
+  str' <- view it
+  pure (str, str', f x)
+baz :: (String, String, Bool)
 baz = bar ('c' >< Tagged @"foo" not >< "hi" >< Tagged @"baz" False >< Tagged @"bar" True)
-baz' :: (String, Bool)
+baz' :: (String, String, Bool)
 baz' = bar $ (Tagged @"foo" not >< "hi" >< Tagged @"baz" False >< (5 :: Int) >< Tagged @"bar" True) & the @String <>~ "ho" & the @Int +~ 1
 
 type (++) :: [a] -> [a] -> [a]
@@ -228,8 +263,7 @@ instance {-# OVERLAPPING #-} Without cap (Caps (cap:caps)) ~ Caps caps
 instance {-# OVERLAPPABLE #-}
          ( Without' cap (Caps (cap':caps)) env ~ Without'' cap' (Without' cap (Caps caps) env)
          , cap `In` Caps caps, Without cap (Caps (cap':caps)) ~ Caps (cap':caps')
-         , Without cap (Caps caps) ~ Caps caps', cap' `NotIn` caps'
-         )
+         , Without cap (Caps caps) ~ Caps caps', cap' `NotIn` caps')
       => cap `In` (Caps (cap':caps)) where
   without (cap' :.. caps) = cap' :.. without @cap caps
 
