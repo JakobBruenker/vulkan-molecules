@@ -52,7 +52,6 @@ import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
 import Has
-import Data.Tagged -- XXX Has should export this
 
 data AppException
   = GLFWInitError
@@ -90,28 +89,6 @@ data Options = MkOptions { optWidth            :: !Natural
 -- To keep track of whether GLFW is initialized
 data GLFWToken s = UnsafeMkGLFWToken
 
--- data WindowSize = MkWindowSize { windowWidth  :: !Natural
---                                , windowHeight :: !Natural
---                                }
--- makeRioClassy ''WindowSize
-
--- data Config = MkConfig { windowSize             :: !WindowSize
---                        , enableValidationLayers :: !Bool
---                        }
--- makeRioClassy ''Config
-
--- data App = MkApp { logFunc :: !LogFunc
---                  , config  :: !Config
---                  }
--- makeRioClassy ''App
-
--- data VulkanApp = MkVulkanApp { app       :: !App
---                              , window    :: !GLFW.Window
---                              , inst      :: !Instance
---                              , device    :: !Device
---                              }
--- makeRioClassy ''VulkanApp
-
 type WindowSize = "windowWidth" ::: Natural >< "windowHeight" ::: Natural
 
 type Config = WindowSize >< "enableValidationLayers" ::: Bool
@@ -121,9 +98,9 @@ type App = LogFunc >< Config
 type VulkanApp = App >< GLFW.Window >< Instance >< Device
 
 mkConfig :: Options -> Caps Config
-mkConfig (MkOptions w h _ l) = Tagged @"windowWidth" w
-                            >< Tagged @"windowHeight" h
-                            >< Tagged @"enableValidationLayers" l
+mkConfig (MkOptions w h _ l) = #windowWidth .:= w
+                            >< #windowHeight .:= h
+                            >< #enableValidationLayers .:= l
 
 options :: Parser Options
 options = MkOptions
@@ -227,11 +204,14 @@ catchVk = (=<<) \case
                                          --     Maybe with could replace args
                                          --     instead of requiring they don't
                                          --     already exist
-runApp :: (env ~ Caps caps
-          , HasTag' "enableValidationLayers" env Bool (Caps (GLFW.Window ':>< (Instance ':>< (Device ':>< caps))))
-          , HasTag' "windowHeight" env Natural (Caps (GLFW.Window ':>< (Instance ':>< (Device ':>< caps))))
-          , HasTag' "windowWidth" env Natural (Caps (GLFW.Window ':>< (Instance ':>< (Device ':>< caps))))
-          , Device `NotIn` caps, Instance `NotIn` caps, GLFW.Window `NotIn` caps, Has App env) => RIO env ()
+runApp :: ( env ~ Caps caps
+          , caps' ~ Caps (GLFW.Window >< Instance >< Device >< caps)
+          , HasTag "enableValidationLayers" caps' Bool
+          , HasTag "windowHeight" caps' Natural
+          , HasTag "windowWidth" caps' Natural
+          , Has App env
+          , (Device >< Instance >< GLFW.Window) `NoOverlap` caps)
+       => RIO env ()
 runApp = do
   mapRIO (view $ the @LogFunc) $ logDebug "Started app"
 

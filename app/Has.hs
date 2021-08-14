@@ -180,12 +180,19 @@ instance (PayloadFor a ~ a, HasCap a env) => HasType a env where
   it = the' @a
 
 -- XXX TODO: orphan instance, so put this into a separate non-imported module
--- XXX TODO: Possibly also create an IsLabel instance for Tagged, i.e.
---           #foo True == Tagged @"foo" True
 instance ( lens ~ ((a -> f a) -> env -> f env), Lookup tag a env
          , HasCap (Tagged tag a) env, Functor f)
          => IsLabel tag ((a -> f a) -> env -> f env) where
   fromLabel = (the' @(Tagged tag a) @env :: Functor f => (a -> f a) -> env -> f env)
+
+type Tag :: Symbol -> Type
+data Tag s = Tag
+
+(.:=) :: Tag s -> a -> Tagged s a
+Tag .:= x = Tagged x
+
+instance IsLabel tag (Tag tag) where
+  fromLabel = Tag @tag
 
 -- XXX probably don't want to use . here, that's too valuable symbol to use for
 -- something users aren't supposed to use
@@ -308,6 +315,12 @@ instance {-# OVERLAPPABLE #-} (Concat cap cap' ~ Caps (cap :>< Req cap'), Unequa
 
 with :: Catable caps caps' => caps -> caps' -> Concat caps caps'
 with = (><)
+
+-- XXX Problem: We somehow need information about whether env is a single cap
+-- or multiple caps, since that influences how it gets catted
+-- Possible alternative: Make caps a tree instead of a list, so how you concat
+-- things does not depend on that
+-- class Withable
 
 type (><) :: k -> k' -> Reqs
 type family a >< b where
