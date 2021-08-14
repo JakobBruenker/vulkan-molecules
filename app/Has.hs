@@ -36,27 +36,32 @@ import Control.Lens hiding (without) -- XXX don't want this as a dependency
 
 -- Requirements
 type Reqs :: Type
-data Reqs = NoReq | Type :.: Reqs
+data Reqs = NoReq | Type :>< Reqs
 
-infixr 5 :.:
+infixr 5 :><
+
+type Req :: forall k . k -> Reqs
+type family Req r where -- XXX
+  Req @Type r = r :>< NoReq
+  Req       r = Tagged r () :>< NoReq
 
 -- Capabilities
-type Caps :: [Type] -> Type
+type Caps :: Reqs -> Type
 data Caps caps where
-  NoCap  :: Caps '[]
-  (:..) :: cap `NotIn` caps => cap -> Caps caps -> Caps (cap:caps)
+  NoCap :: Caps NoReq
+  (:..) :: cap `NotIn` caps => cap -> Caps caps -> Caps (cap :>< caps)
 
 infixr 5 :..
 
-type NoOverlap :: [Type] -> [Type] -> Constraint
+type NoOverlap :: Reqs -> Reqs -> Constraint
 type family NoOverlap ts ts' where
-  NoOverlap '[]    ts' = ()
-  NoOverlap (t:ts) ts' = (t `NotIn` ts', NoOverlap ts ts')
+  NoOverlap NoReq      ts' = ()
+  NoOverlap (t :>< ts) ts' = (t `NotIn` ts', NoOverlap ts ts')
 
-type NotInWitness :: Type -> [Type] -> Type
+type NotInWitness :: Type -> Reqs -> Type
 data NotInWitness t ts where
-  NotInWitnessNil  :: NotInWitness t '[]
-  NotInWitnessCons :: Unequal t t' => NotInWitness t ts -> NotInWitness t (t':ts)
+  NotInWitnessNil  :: NotInWitness t NoReq
+  NotInWitnessCons :: Unequal t t' => NotInWitness t ts -> NotInWitness t (t' :>< ts)
 
 type Unequal :: Type -> Type -> Constraint
 type family Unequal t t' where
@@ -69,20 +74,20 @@ type family Unequal' t r where
   Unequal t True = TypeError (ShowType t :<>: Text " is already a capability")
   Unequal t False = ()
 
-type NotIn :: Type -> [Type] -> Constraint
+type NotIn :: Type -> Reqs -> Constraint
 class t `NotIn` ts where
   notInWitness :: NotInWitness t ts
 
-instance t `NotIn` '[] where
+instance t `NotIn` NoReq where
   notInWitness = NotInWitnessNil
 
-instance (Unequal t t', t `NotIn` ts) => t `NotIn` (t':ts) where
+instance (Unequal t t', t `NotIn` ts) => t `NotIn` (t' :>< ts) where
   notInWitness = NotInWitnessCons notInWitness
 
-type All :: (Type -> Constraint) -> [Type] -> Constraint
+type All :: (Type -> Constraint) -> Reqs -> Constraint
 type family All c ts where
-  All c '[]    = ()
-  All c (t:ts) = (c t, All c ts)
+  All c NoReq      = ()
+  All c (t :>< ts) = (c t, All c ts)
 
 -- XXX TODO write better Show instance, like (cap1 >< cap2 >< cap3)
 deriving instance All Show caps => Show (Caps caps)
@@ -90,11 +95,11 @@ deriving instance All Show caps => Show (Caps caps)
 type Has :: forall k . k -> Type -> Constraint
 type family Has reqs env where
   Has NoReq          env = ()
-  Has (req :.: reqs) env = (HasCapOrTag req env, Has reqs env)
+  Has (req :>< reqs) env = (HasCapOrTag req env, Has reqs env)
   Has @Type req      env = HasCapOrTag req env
   Has req            env = HasCapOrTag (Tagged req ()) env
 
-tailLens :: Lens' (Caps (cap:caps)) (Caps caps)
+tailLens :: Lens' (Caps (cap :>< caps)) (Caps caps)
 tailLens = lens (\(_ :.. caps) -> caps) \(cap :.. _) caps' -> cap :.. caps'
 
 type PayloadFor :: forall k . Type -> k
@@ -112,13 +117,14 @@ instance {-# OVERLAPPING #-} HasCap (Tagged s cap) (Tagged s cap) where
 instance {-# OVERLAPPABLE #-} PayloadFor cap ~ cap => HasCap cap cap where
   the' = id
 
-instance {-# OVERLAPPING #-} HasCap (Tagged s t) (Caps (Tagged s t:caps)) where
+instance {-# OVERLAPPING #-} HasCap (Tagged s t) (Caps (Tagged s t :>< caps)) where
   the' = lens (\(cap :.. _) -> untag cap) \(_ :.. caps) cap' -> Tagged @s cap' :.. caps
 
-instance {-# OVERLAPS #-} PayloadFor cap ~ cap => HasCap cap (Caps (cap:caps)) where
+instance {-# OVERLAPS #-} PayloadFor cap ~ cap => HasCap cap (Caps (cap :>< caps)) where
   the' = lens (\(cap :.. _) -> cap) \(_ :.. caps) cap' -> cap' :.. caps
 
-instance {-# OVERLAPPABLE #-} HasCap cap (Caps caps) => HasCap cap (Caps (cap':caps)) where
+instance {-# OVERLAPPABLE #-} HasCap cap (Caps caps)
+         => HasCap cap (Caps (cap' :>< caps)) where
   the' = tailLens.the' @cap
 
 -- class instead of type family so GHCi displays the types a little more
@@ -142,12 +148,14 @@ class HasCap (Tagged tag a) env => HasTag' tag env a env' | tag env -> a
 
 instance HasTag' tag (Tagged tag a) a env'
 
-instance {-# OVERLAPPING #-} HasTag' tag (Caps (Tagged tag a:env)) a env'
+instance {-# OVERLAPPING #-} HasTag' tag (Caps (Tagged tag a :>< env)) a env'
 
 instance {-# OVERLAPS #-} HasTag' tag (Caps env) a env'
-         => HasTag' tag (Caps (cap:env)) a env'
+         => HasTag' tag (Caps (cap :>< env)) a env'
 
-instance {-# OVERLAPPABLE #-}
+instance {-# OVERLAPPABLE #-} -- XXX TODO add "of type a" to error message and possibly a
+                              --          separate error message if the tag is
+                              --          there but of the wrong type
          ( TypeError (Text "Can't find tag " :<>: ShowType tag :<>:
                       Text " in " :<>: ShowType env')
          , HasCap (Tagged tag a) env
@@ -172,9 +180,11 @@ instance (PayloadFor a ~ a, HasCap a env) => HasType a env where
   it = the' @a
 
 -- XXX TODO: orphan instance, so put this into a separate non-imported module
+-- XXX TODO: Possibly also create an IsLabel instance for Tagged, i.e.
+--           #foo True == Tagged @"foo" True
 instance ( lens ~ ((a -> f a) -> env -> f env), Lookup tag a env
          , HasCap (Tagged tag a) env, Functor f)
-         => IsLabel tag lens where
+         => IsLabel tag ((a -> f a) -> env -> f env) where
   fromLabel = (the' @(Tagged tag a) @env :: Functor f => (a -> f a) -> env -> f env)
 
 -- XXX probably don't want to use . here, that's too valuable symbol to use for
@@ -208,13 +218,13 @@ type family (++) xs ys where
   (x:xs) ++ ys = x : (xs ++ ys)
 
 lemma_notInConcat :: NotInWitness cap caps -> NotInWitness cap caps'
-                  -> NotInWitness cap (caps ++ caps')
+                  -> NotInWitness cap (CatReqs caps caps')
 lemma_notInConcat = \case
   NotInWitnessNil    -> id
   NotInWitnessCons w -> NotInWitnessCons . lemma_notInConcat w
 
-lemma_notInOverlap :: forall cap caps caps' . NoOverlap (cap:caps) caps'
-                   => NotInWitness cap caps -> NotInWitness cap (caps ++ caps')
+lemma_notInOverlap :: forall cap caps caps' . NoOverlap (cap :>< caps) caps'
+                   => NotInWitness cap caps -> NotInWitness cap (CatReqs caps caps')
 lemma_notInOverlap w = lemma_notInConcat w (notInWitness @cap @caps')
 
 withNotInWitness :: NotInWitness cap caps -> (cap `NotIn` caps => a) -> a
@@ -222,7 +232,7 @@ withNotInWitness w x = case w of
   NotInWitnessNil     -> x
   NotInWitnessCons w' -> withNotInWitness w' x
 
-(+++) :: NoOverlap caps caps' => Caps caps -> Caps caps' -> Caps (caps ++ caps')
+(+++) :: NoOverlap caps caps' => Caps caps -> Caps caps' -> Caps (CatReqs caps caps')
 NoCap +++ caps' = caps'
 ((cap :: cap) :.. (caps :: Caps caps)) +++ (caps' :: Caps caps') =
   withNotInWitness
@@ -237,16 +247,16 @@ type family Without cap caps where
 
 type Without' :: Type -> Type -> Type -> Type
 type family Without' cap caps env where
-  Without' cap cap env = Caps '[]
-  Without' cap (Caps (cap:caps)) env = Caps caps
-  Without' cap (Caps (cap':caps)) env = Without'' cap' (Without' cap (Caps caps) env)
+  Without' cap cap env = Caps NoReq
+  Without' cap (Caps (cap :>< caps)) env = Caps caps
+  Without' cap (Caps (cap' :>< caps)) env = Without'' cap' (Without' cap (Caps caps) env)
   Without' cap caps env =
     TypeError (Text "Capability " :<>: ShowType cap :<>:
                Text " not found in environment " :<>: ShowType env)
 
 type Without'' :: Type -> Type -> Type
 type family Without'' cap caps where
-  Without'' cap (Caps caps) = Caps (cap : caps)
+  Without'' cap (Caps caps) = Caps (cap :>< caps)
 
 -- XXX TODO this should also have instances that allow you to remove by tag
 type In :: Type -> Type -> Constraint
@@ -256,23 +266,24 @@ class cap `In` caps where
 instance cap `In` cap where
   without _ = NoCap
 
-instance {-# OVERLAPPING #-} Without cap (Caps (cap:caps)) ~ Caps caps
-         => cap `In` Caps (cap:caps) where
+instance {-# OVERLAPPING #-} Without cap (Caps (cap :>< caps)) ~ Caps caps
+         => cap `In` Caps (cap :>< caps) where
   without (_ :.. caps) = caps
 
 instance {-# OVERLAPPABLE #-}
-         ( Without' cap (Caps (cap':caps)) env ~ Without'' cap' (Without' cap (Caps caps) env)
-         , cap `In` Caps caps, Without cap (Caps (cap':caps)) ~ Caps (cap':caps')
+         ( Without' cap (Caps (cap' :>< caps)) env ~
+           Without'' cap' (Without' cap (Caps caps) env)
+         , cap `In` Caps caps, Without cap (Caps (cap' :>< caps)) ~ Caps (cap' :>< caps')
          , Without cap (Caps caps) ~ Caps caps', cap' `NotIn` caps')
-      => cap `In` (Caps (cap':caps)) where
+      => cap `In` (Caps (cap' :>< caps)) where
   without (cap' :.. caps) = cap' :.. without @cap caps
 
 type Concat :: Type -> Type -> Type
 type family Concat a b where
-  Concat (Caps caps) (Caps caps') = Caps (caps ++ caps')
-  Concat (Caps caps) cap' = Caps (caps ++ '[cap'])
-  Concat cap (Caps caps') = Caps (cap : caps')
-  Concat cap cap' = Caps [cap, cap']
+  Concat (Caps caps) (Caps caps') = Caps (CatReqs caps caps')
+  Concat (Caps caps) cap' = Caps (CatReqs caps (Req cap'))
+  Concat cap (Caps caps') = Caps (cap :>< caps')
+  Concat cap cap' = Caps (cap :>< Req cap')
 
 infixr 3 ><
 
@@ -282,16 +293,16 @@ class Catable a b where
 instance {-# OVERLAPPING #-} NoOverlap caps caps' => Catable (Caps caps) (Caps caps') where
   (><) = (+++)
 
-instance {-# OVERLAPS #-} ( Concat (Caps caps) cap' ~ Caps (caps ++ '[cap'])
-                          , NoOverlap caps '[cap'])
+instance {-# OVERLAPS #-} ( Concat (Caps caps) cap' ~ Caps (CatReqs caps (Req cap'))
+                          , NoOverlap caps (Req cap'))
   => Catable (Caps caps) cap' where
   caps >< cap = caps +++ (cap :.. NoCap)
 
-instance {-# OVERLAPS #-} (Concat cap (Caps caps) ~ Caps (cap : caps), cap `NotIn` caps)
+instance {-# OVERLAPS #-} (Concat cap (Caps caps) ~ Caps (cap :>< caps), cap `NotIn` caps)
   => Catable cap (Caps caps) where
   cap >< caps = cap :.. caps
 
-instance {-# OVERLAPPABLE #-} (Concat cap cap' ~ Caps [cap, cap'], Unequal cap cap')
+instance {-# OVERLAPPABLE #-} (Concat cap cap' ~ Caps (cap :>< Req cap'), Unequal cap cap')
   => Catable cap cap' where
   cap >< cap' = cap :.. cap' :.. NoCap
 
@@ -305,10 +316,10 @@ type family a >< b where
 type ToReqs :: forall k . k -> Reqs
 type family ToReqs r where
   ToReqs @Reqs r = r
-  ToReqs @Type r = r :.: NoReq
-  ToReqs r = Tagged r () :.: NoReq
+  ToReqs @Type r = r :>< NoReq
+  ToReqs r = Tagged r () :>< NoReq
 
 type CatReqs :: Reqs -> Reqs -> Reqs
 type family CatReqs a b where
   CatReqs NoReq      b = b
-  CatReqs (a :.: as) b = a :.: (CatReqs as b)
+  CatReqs (a :>< as) b = a :>< CatReqs as b

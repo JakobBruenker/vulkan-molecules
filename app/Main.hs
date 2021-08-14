@@ -18,6 +18,9 @@
            , ScopedTypeVariables
            , TypeOperators
            , DataKinds
+           , OverloadedLabels
+           , UndecidableInstances
+           , TypeFamilies
 #-}
 
 module Main where
@@ -43,11 +46,13 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , Display
                      , WaylandSurfaceCreateInfoKHR(display)
                      , DisplayPropertiesKHR(display)
+                     , (:::)
                      )
 import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
-import TH
+import Has
+import Data.Tagged -- XXX Has should export this
 
 data AppException
   = GLFWInitError
@@ -85,30 +90,40 @@ data Options = MkOptions { optWidth            :: !Natural
 -- To keep track of whether GLFW is initialized
 data GLFWToken s = UnsafeMkGLFWToken
 
-data WindowSize = MkWindowSize { windowWidth  :: !Natural
-                               , windowHeight :: !Natural
-                               }
-makeRioClassy ''WindowSize
+-- data WindowSize = MkWindowSize { windowWidth  :: !Natural
+--                                , windowHeight :: !Natural
+--                                }
+-- makeRioClassy ''WindowSize
 
-data Config = MkConfig { windowSize             :: !WindowSize
-                       , enableValidationLayers :: !Bool
-                       }
-makeRioClassy ''Config
+-- data Config = MkConfig { windowSize             :: !WindowSize
+--                        , enableValidationLayers :: !Bool
+--                        }
+-- makeRioClassy ''Config
 
-data App = MkApp { logFunc :: !LogFunc
-                 , config  :: !Config
-                 }
-makeRioClassy ''App
+-- data App = MkApp { logFunc :: !LogFunc
+--                  , config  :: !Config
+--                  }
+-- makeRioClassy ''App
 
-data VulkanApp = MkVulkanApp { app       :: !App
-                             , window    :: !GLFW.Window
-                             , inst      :: !Instance
-                             , device :: !Device
-                             }
-makeRioClassy ''VulkanApp
+-- data VulkanApp = MkVulkanApp { app       :: !App
+--                              , window    :: !GLFW.Window
+--                              , inst      :: !Instance
+--                              , device    :: !Device
+--                              }
+-- makeRioClassy ''VulkanApp
 
-mkConfig :: Options -> Config
-mkConfig (MkOptions w h _ l) = MkConfig (MkWindowSize w h) l
+type WindowSize = "windowWidth" ::: Natural >< "windowHeight" ::: Natural
+
+type Config = WindowSize >< "enableValidationLayers" ::: Bool
+
+type App = LogFunc >< Config
+
+type VulkanApp = App >< GLFW.Window >< Instance >< Device
+
+mkConfig :: Options -> Caps Config
+mkConfig (MkOptions w h _ l) = Tagged @"windowWidth" w
+                            >< Tagged @"windowHeight" h
+                            >< Tagged @"enableValidationLayers" l
 
 options :: Parser Options
 options = MkOptions
@@ -138,11 +153,9 @@ main = do
   opts <- execParser (Opt.info (options <**> helper) fullDesc)
   logOptions <- logOptionsHandle stderr (optVerbose opts)
   withLogFunc logOptions \logFunc -> do
-    let app = MkApp { logFunc = logFunc
-                    , config = mkConfig opts
-                    }
+    let app = logFunc >< mkConfig opts
     runRIO app $ catch runApp \e -> do
-      logError $ display @SomeException e
+      mapRIO (view $ the @LogFunc) . logError $ display @SomeException e
       exitFailure
 
 withGLFW :: (forall s . GLFWToken s -> RIO env a) -> RIO env a
@@ -152,10 +165,10 @@ withGLFW action = bracket
   \case success | success   -> action UnsafeMkGLFWToken
                 | otherwise -> throwIO GLFWInitError
 
-withWindow :: HasWindowSize env => GLFWToken s -> (GLFW.Window -> RIO env a) -> RIO env a
+withWindow :: Has WindowSize env => GLFWToken s -> (GLFW.Window -> RIO env a) -> RIO env a
 withWindow _ action = do
-  width <- views windowWidthL fromIntegral
-  height <- views windowHeightL fromIntegral
+  width <- views #windowWidth fromIntegral
+  height <- views #windowHeight fromIntegral
   bracket
     do liftIO do
          mapM_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
@@ -166,13 +179,13 @@ withWindow _ action = do
     do liftIO . mapM_ GLFW.destroyWindow
     do maybe (throwIO GLFWWindowError) action
 
-mainLoop :: HasVulkanApp env => RIO env ()
+mainLoop :: Has VulkanApp env => RIO env ()
 mainLoop = whileM do
   liftIO GLFW.waitEvents -- XXX might need pollEvents instead
-  liftIO . fmap not . GLFW.windowShouldClose =<< view windowL
+  liftIO . fmap not . GLFW.windowShouldClose =<< view it
 
-validationLayers :: HasEnableValidationLayers env => RIO env (Vector ByteString)
-validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure []) do
+validationLayers :: Has ("enableValidationLayers" ::: Bool) env => RIO env (Vector ByteString)
+validationLayers = fmap V.fromList $ view #enableValidationLayers >>= bool (pure []) do
    properties <- catchVk enumerateInstanceLayerProperties
    case NE.nonEmpty $ filter (not . (properties `hasLayer`)) layers of
      Nothing          -> pure layers
@@ -181,14 +194,16 @@ validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure
     hasLayer props = V.elem ?? V.map layerName props
     layers = ["VK_LAYER_KHRONOS_validation"]
 
-pickPhysicalDevice :: HasLogFunc env
-                   => Instance -> RIO env (PhysicalDevice, "queueFamilyIndex" ::: Word32)
+pickPhysicalDevice :: Has LogFunc env
+                   -- => Instance -> RIO env (PhysicalDevice, "queueFamilyIndex" ::: Word32)
+                   => Instance -> RIO env (PhysicalDevice, Word32) -- XXX return Tagged
 pickPhysicalDevice inst = do
   catchVk (enumeratePhysicalDevices inst) <&> toList <&> NE.nonEmpty >>= maybe
     do throwIO VkNoPhysicalDevicesError
     \physDevs -> do
       let lds = length physDevs
-      logDebug $ "Found " <> display lds <> " physical device" <> bool "s" "" (lds == 1)
+      mapRIO (view $ the @LogFunc) .
+        logDebug $ "Found " <> display lds <> " physical device" <> bool "s" "" (lds == 1)
       mapMaybeM (fmap sequence . traverseToSnd findQueueFamily) (toList physDevs) <&>
         NE.nonEmpty >>= maybe
           do throwIO VkNoSuitableDevicesError
@@ -208,9 +223,17 @@ catchVk = (=<<) \case
   (SUCCESS, x) -> pure x
   (err    , _) -> throwIO $ VkGenericError err
 
-runApp :: HasApp env => RIO env ()
+-- runApp :: (Has App env) => RIO env () -- XXX I'd really like to keep this simple one
+                                         --     Maybe with could replace args
+                                         --     instead of requiring they don't
+                                         --     already exist
+runApp :: (env ~ Caps caps
+          , HasTag' "enableValidationLayers" env Bool (Caps (GLFW.Window ':>< (Instance ':>< (Device ':>< caps))))
+          , HasTag' "windowHeight" env Natural (Caps (GLFW.Window ':>< (Instance ':>< (Device ':>< caps))))
+          , HasTag' "windowWidth" env Natural (Caps (GLFW.Window ':>< (Instance ':>< (Device ':>< caps))))
+          , Device `NotIn` caps, Instance `NotIn` caps, GLFW.Window `NotIn` caps, Has App env) => RIO env ()
 runApp = do
-  logDebug "Started app"
+  mapRIO (view $ the @LogFunc) $ logDebug "Started app"
 
   enabledExtensionNames <- V.fromList <$>
     do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
@@ -225,7 +248,8 @@ runApp = do
       let queueCreateInfos = [SomeStruct zero{queueFamilyIndex, queuePriorities = [1]}]
           deviceCreateInfo = zero{queueCreateInfos, enabledLayerNames}
       withDevice physDev deviceCreateInfo Nothing bracket \device -> do
-        logDebug "Successfully initialized GLFW and created window, instance, and device"
-        mapRIO (\env -> MkVulkanApp (env^.appL) window inst device) mainLoop
+        mapRIO (view $ the @LogFunc) $
+          logDebug "Successfully initialized GLFW and created window, instance, and device"
+        mapRIO (with $ window >< inst >< device) mainLoop
 
-  logInfo "Goodbye!"
+  mapRIO (view $ the @LogFunc) $ logInfo "Goodbye!"
