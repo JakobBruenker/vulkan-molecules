@@ -83,8 +83,6 @@ thing I'd like to be able to write:
 >
 > countOneStep' :: Has (Counter >< Tagged "counter increment" Int) env => RIO env ()
 > countOneStep' = do
->   -- XXX this is impossible. How is `the` supposed to know where to look up
->   -- the type corresponding to "counter increment"?
 >   increment <- view (the @"counter increment")
 >   flip modifyIORef' (+ increment) =<< view (the @Counter)
 >

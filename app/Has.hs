@@ -22,7 +22,9 @@
            , ImpredicativeTypes
 #-}
 
+-- XXX TODO export list, export Tagged as well
 module Has where
+
 import RIO (MonadReader) -- XXX don't need this
 import Data.Kind
 import Data.Tagged
@@ -82,14 +84,15 @@ type family All c ts where
   All c '[]    = ()
   All c (t:ts) = (c t, All c ts)
 
--- XXX TODO write better Show instance
+-- XXX TODO write better Show instance, like (cap1 >< cap2 >< cap3)
 deriving instance All Show caps => Show (Caps caps)
 
-type Has :: k -> Type -> Constraint
-type family Has caps env where
+type Has :: forall k . k -> Type -> Constraint
+type family Has reqs env where
   Has NoReq          env = ()
-  Has (cap :.: caps) env = (HasCap cap env, Has caps env)
-  Has cap            env = HasCap cap env
+  Has (req :.: reqs) env = (HasCapOrTag req env, Has reqs env)
+  Has @Type req      env = HasCapOrTag req env
+  Has req            env = HasCapOrTag (Tagged req ()) env
 
 tailLens :: Lens' (Caps (cap:caps)) (Caps caps)
 tailLens = lens (\(_ :.. caps) -> caps) \(cap :.. _) caps' -> cap :.. caps'
@@ -127,7 +130,7 @@ instance {-# OVERLAPPABLE #-} HasCap cap (Caps caps) => HasCap cap (Caps (cap':c
 -- instance {-# OVERLAPPABLE #-} HasTag tag (Caps env) a
 --   => HasTag tag (Caps (cap:env)) a
 
--- XXX Tradeoff: error messages are better with the this definition,
+-- XXX Tradeoff: error messages are better with this definition,
 -- but ghci types are slightly better with the above definition
 -- But would have to also change HasCap to get better error messages for
 -- non-tagged types also
@@ -136,12 +139,15 @@ type HasTag tag env a = HasTag' tag env a env
 
 type HasTag' :: k -> Type -> Type -> Type -> Constraint
 class HasCap (Tagged tag a) env => HasTag' tag env a env' | tag env -> a
+
 instance HasTag' tag (Tagged tag a) a env'
+
 instance {-# OVERLAPPING #-} HasTag' tag (Caps (Tagged tag a:env)) a env'
+
 instance {-# OVERLAPS #-} HasTag' tag (Caps env) a env'
-  => HasTag' tag (Caps (cap:env)) a env'
+         => HasTag' tag (Caps (cap:env)) a env'
+
 instance {-# OVERLAPPABLE #-}
-         -- ( (proxy "Can't find tag", tag, proxy "in", env') ~~ (
          ( TypeError (Text "Can't find tag " :<>: ShowType tag :<>:
                       Text " in " :<>: ShowType env')
          , HasCap (Tagged tag a) env
@@ -171,30 +177,23 @@ instance ( lens ~ ((a -> f a) -> env -> f env), Lookup tag a env
          => IsLabel tag lens where
   fromLabel = (the' @(Tagged tag a) @env :: Functor f => (a -> f a) -> env -> f env)
 
-type (.) :: k -> Type -> Constraint
-type family env . t where
-  env . Tagged tag a = HasTag tag env a
-  env . a = HasCap a env
-
-infixr 4 .
-
-type (...) :: k -> [Type] -> Constraint
-type family env ... ts where
-  env ... '[] = ()
-  env ... (t:ts) = (env . t, env ... ts)
-
-infixr 4 ...
+-- XXX probably don't want to use . here, that's too valuable symbol to use for
+-- something users aren't supposed to use
+type HasCapOrTag :: Type -> k -> Constraint
+type family HasCapOrTag t env where
+  HasCapOrTag (Tagged tag a) env = HasTag tag env a
+  HasCapOrTag a              env = HasCap a env
 
 type (:::) = Tagged
 
 infixr 5 :::
 
 -- XXX example
-bar :: (env ... ["foo" ::: (Bool -> Bool), "bar" ::: Bool, String], MonadReader env m)
+bar :: (Has ("foo" ::: (Bool -> Bool) >< "bar" ::: Bool >< String) env, MonadReader env m)
     => m (String, String, Bool)
 bar = do
   f <- view $ the @"foo"
-  x <- view #bar -- XXX
+  x <- view #bar
   str <- view $ the @String
   str' <- view it
   pure (str, str', f x)
@@ -249,6 +248,7 @@ type Without'' :: Type -> Type -> Type
 type family Without'' cap caps where
   Without'' cap (Caps caps) = Caps (cap : caps)
 
+-- XXX TODO this should also have instances that allow you to remove by tag
 type In :: Type -> Type -> Constraint
 class cap `In` caps where
   without :: caps -> Without cap caps
@@ -274,6 +274,8 @@ type family Concat a b where
   Concat cap (Caps caps') = Caps (cap : caps')
   Concat cap cap' = Caps [cap, cap']
 
+infixr 3 ><
+
 class Catable a b where
   (><) :: a -> b -> Concat a b
 
@@ -295,3 +297,18 @@ instance {-# OVERLAPPABLE #-} (Concat cap cap' ~ Caps [cap, cap'], Unequal cap c
 
 with :: Catable caps caps' => caps -> caps' -> Concat caps caps'
 with = (><)
+
+type (><) :: k -> k' -> Reqs
+type family a >< b where
+  a >< b = CatReqs (ToReqs a) (ToReqs b)
+
+type ToReqs :: forall k . k -> Reqs
+type family ToReqs r where
+  ToReqs @Reqs r = r
+  ToReqs @Type r = r :.: NoReq
+  ToReqs r = Tagged r () :.: NoReq
+
+type CatReqs :: Reqs -> Reqs -> Reqs
+type family CatReqs a b where
+  CatReqs NoReq      b = b
+  CatReqs (a :.: as) b = a :.: (CatReqs as b)
