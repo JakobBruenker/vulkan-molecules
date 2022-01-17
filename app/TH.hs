@@ -1,9 +1,4 @@
-{-# LANGUAGE BlockArguments
-           , LambdaCase
-           , TupleSections
-           , TemplateHaskellQuotes
-           , ImportQualifiedPost
-#-}
+{-# Language TemplateHaskellQuotes #-}
 
 module TH where
 

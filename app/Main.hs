@@ -1,24 +1,5 @@
-{-# LANGUAGE NoImplicitPrelude
-           , OverloadedStrings
-           , OverloadedLists
-           , LambdaCase
-           , MultiWayIf
-           , ViewPatterns
-           , TupleSections
-           , FlexibleContexts
-           , FlexibleInstances
-           , BlockArguments
-           , ImportQualifiedPost
-           , TemplateHaskell
-           , RankNTypes
-           , TypeApplications
-           , DerivingVia
-           , DuplicateRecordFields
-           , NamedFieldPuns
-           , ScopedTypeVariables
-           , TypeOperators
-           , DataKinds
-#-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE OverloadedLists #-}
 
 module Main where
 
@@ -31,10 +12,22 @@ import Data.List.NonEmpty.Extra qualified as NE
 
 import Control.Lens (views, (??))
 import Control.Monad.Extra (whileM)
-import Data.Bits
-import Options.Applicative hiding (action, info)
+import Data.Bits (Bits((.&.)))
+import Options.Applicative
+    ( (<**>),
+      auto,
+      fullDesc,
+      help,
+      long,
+      metavar,
+      option,
+      short,
+      showDefault,
+      switch,
+      execParser,
+      helper,
+      Parser )
 import Options.Applicative qualified as Opt
-import Relude.Extra.Tuple
 import System.Environment (getProgName)
 
 import Graphics.UI.GLFW qualified as GLFW
@@ -47,7 +40,8 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
-import TH
+import TH (makeRioClassy)
+import Utils (traverseToSnd)
 
 data AppException
   = GLFWInitError
@@ -76,34 +70,36 @@ instance Display AppException where
     VkNoPhysicalDevicesError -> "No physical devices found."
     VkNoSuitableDevicesError -> "No suitable devices found."
 
-data Options = MkOptions { optWidth            :: !Natural
-                         , optHeight           :: !Natural
-                         , optVerbose          :: !Bool
-                         , optValidationLayers :: !Bool
+data Options = MkOptions { optWidth            :: Natural
+                         , optHeight           :: Natural
+                         , optVerbose          :: Bool
+                         , optValidationLayers :: Bool
                          }
 
 -- To keep track of whether GLFW is initialized
 data GLFWToken s = UnsafeMkGLFWToken
 
-data WindowSize = MkWindowSize { windowWidth  :: !Natural
-                               , windowHeight :: !Natural
+data WindowSize = MkWindowSize { windowWidth  :: Natural
+                               , windowHeight :: Natural
                                }
 makeRioClassy ''WindowSize
 
-data Config = MkConfig { windowSize             :: !WindowSize
-                       , enableValidationLayers :: !Bool
+data Config = MkConfig { windowSize             :: WindowSize
+                       , enableValidationLayers :: Bool
                        }
 makeRioClassy ''Config
 
-data App = MkApp { logFunc :: !LogFunc
-                 , config  :: !Config
+data App = MkApp { logFunc :: LogFunc
+                 , config  :: Config
                  }
 makeRioClassy ''App
 
-data VulkanApp = MkVulkanApp { app       :: !App
-                             , window    :: !GLFW.Window
-                             , inst      :: !Instance
-                             , device :: !Device
+data VulkanApp = MkVulkanApp { app         :: App
+                             , window      :: GLFW.Window
+                             , inst        :: Instance
+                             , device      :: Device
+                             , deviceQueue :: Queue
+                             , surface     :: SurfaceKHR
                              }
 makeRioClassy ''VulkanApp
 
@@ -149,8 +145,8 @@ withGLFW :: (forall s . GLFWToken s -> RIO env a) -> RIO env a
 withGLFW action = bracket
   do liftIO GLFW.init
   do const $ liftIO GLFW.terminate
-  \case success | success   -> action UnsafeMkGLFWToken
-                | otherwise -> throwIO GLFWInitError
+  \success -> if | success   -> action UnsafeMkGLFWToken
+                 | otherwise -> throwIO GLFWInitError
 
 withWindow :: HasWindowSize env => GLFWToken s -> (GLFW.Window -> RIO env a) -> RIO env a
 withWindow _ action = do
@@ -184,15 +180,16 @@ validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure
 pickPhysicalDevice :: HasLogFunc env
                    => Instance -> RIO env (PhysicalDevice, "queueFamilyIndex" ::: Word32)
 pickPhysicalDevice inst = do
-  catchVk (enumeratePhysicalDevices inst) <&> toList <&> NE.nonEmpty >>= maybe
-    do throwIO VkNoPhysicalDevicesError
-    \physDevs -> do
-      let lds = length physDevs
-      logDebug $ "Found " <> display lds <> " physical device" <> bool "s" "" (lds == 1)
-      mapMaybeM (fmap sequence . traverseToSnd findQueueFamily) (toList physDevs) <&>
-        NE.nonEmpty >>= maybe
-          do throwIO VkNoSuitableDevicesError
-          do (fst . NE.maximumOn1 snd <$>) . mapM (traverseToSnd $ score . fst)
+  catchVk (enumeratePhysicalDevices inst) >>= do
+    toList >>> NE.nonEmpty >>> maybe
+      do throwIO VkNoPhysicalDevicesError
+      \physDevs -> do
+        let lds = length physDevs
+        logDebug $ "Found " <> display lds <> " physical device" <> bool "s" "" (lds == 1)
+        mapMaybeM (fmap sequence . traverseToSnd findQueueFamily) (toList physDevs) <&>
+          NE.nonEmpty >>= maybe
+            do throwIO VkNoSuitableDevicesError
+            do (fst . NE.maximumOn1 snd <$>) . mapM (traverseToSnd $ score . fst)
   where
     score :: PhysicalDevice -> RIO env Integer
     score = (bool 1000 0 . (PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType <$>) .
@@ -210,7 +207,7 @@ catchVk = (=<<) \case
 
 runApp :: HasApp env => RIO env ()
 runApp = do
-  logDebug "Started app"
+  logDebug "Started boxticle"
 
   enabledExtensionNames <- V.fromList <$>
     do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
@@ -225,7 +222,8 @@ runApp = do
       let queueCreateInfos = [SomeStruct zero{queueFamilyIndex, queuePriorities = [1]}]
           deviceCreateInfo = zero{queueCreateInfos, enabledLayerNames}
       withDevice physDev deviceCreateInfo Nothing bracket \device -> do
-        logDebug "Successfully initialized GLFW and created window, instance, and device"
-        mapRIO (\env -> MkVulkanApp (env^.appL) window inst device) mainLoop
+        deviceQueue <- getDeviceQueue device queueFamilyIndex 0
+        logDebug "Successfully initialized GLFW and created window, instance, device, and device queue"
+        mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) mainLoop
 
   logInfo "Goodbye!"
