@@ -41,7 +41,7 @@ import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
 import TH (makeRioClassy)
-import Utils (traverseToSnd)
+import Utils (traverseToSnd, plural)
 import Foreign (malloc, nullPtr, Storable (peek))
 import Data.Coerce (coerce)
 import Data.Foldable (find)
@@ -109,7 +109,6 @@ makeRioClassy ''QueueFamilyIndices
 data Queues = MkQueues { graphicsQueue :: Queue
                        , presentQueue  :: Queue
                        }
-
 makeRioClassy ''Queues
 
 data VulkanApp = MkVulkanApp { app                :: App
@@ -212,8 +211,14 @@ pickPhysicalDevice inst surface = do
       do throwIO VkNoPhysicalDevicesError
       \physDevs -> do
         let lds = length physDevs
-        logDebug $ "Found " <> display lds <> " physical device" <> bool "s" "" (lds == 1) <> "."
-        mapMaybeM (fmap sequence . traverseToSnd findQueueFamilies) (toList physDevs) <&>
+        logDebug $ "Found " <> display lds <> plural " physical device" lds <> "."
+        candidates <- filterM checkDeviceExtensionSupport $ toList physDevs
+
+        let lcs = length candidates
+        logDebug $ "Found " <> display lcs <> plural " physical device" lcs <>
+          " supporting the extensions " <> displayShow deviceExtensions <> "."
+
+        mapMaybeM (fmap sequence . traverseToSnd findQueueFamilies) candidates <&>
           NE.nonEmpty >>= maybe
             do throwIO VkNoSuitableDevicesError
             do (fst . NE.maximumOn1 snd <$>) . mapM (traverseToSnd $ score . fst)
@@ -239,6 +244,16 @@ pickPhysicalDevice inst surface = do
     logResult name = maybe do logDebug $ "Couldn't find " <> name <> " queue family on candidate device."
                            \i -> logDebug $ "Found " <> name <> " queue family (index " <> display i <> ")."
 
+    checkDeviceExtensionSupport :: PhysicalDevice -> RIO env Bool
+    checkDeviceExtensionSupport physDev = do
+      exts <- fmap extensionName <$> catchVk (enumerateDeviceExtensionProperties physDev Nothing)
+      pure $ V.all (`elem` exts) deviceExtensions
+
+deviceExtensions :: Vector ByteString
+deviceExtensions =
+  [ KHR_SWAPCHAIN_EXTENSION_NAME
+  ]
+
 catchVk :: MonadIO m => m (Result, a) -> m a
 catchVk = (=<<) \case
   (SUCCESS, x) -> pure x
@@ -256,7 +271,7 @@ runApp = do
 
     enabledExtensionNames <- V.fromList <$>
       do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
-    logDebug $ "Required extensions: " <> displayShow enabledExtensionNames
+    logDebug $ "Required extensions for GLFW: " <> displayShow enabledExtensionNames
 
     enabledLayerNames <- validationLayers
     let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
@@ -265,17 +280,24 @@ runApp = do
     withInstance instanceCreateInfo Nothing bracket \inst -> do
       withWindow glfwToken \window -> do
         logDebug "Created window."
+
         withWindowSurface inst window \surface -> do
           (physDev, queueFamilyIndices@(MkQueueFamilyIndices{..})) <- pickPhysicalDevice inst surface
           logDebug "Picked device."
+
           let queueCreateInfos = V.fromList (nub [graphicsQueueFamily, presentQueueFamily]) <&>
                 \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1]}
-              deviceCreateInfo = zero{queueCreateInfos, enabledLayerNames}
+              deviceCreateInfo = zero{ queueCreateInfos
+                                     , enabledLayerNames
+                                     , enabledExtensionNames = deviceExtensions
+                                     }
           withDevice physDev deviceCreateInfo Nothing bracket \device -> do
             logDebug "Created logical device."
+
             queues <- uncurry MkQueues <$>
               join bitraverse (getDeviceQueue device ?? 0) (graphicsQueueFamily, presentQueueFamily)
             logDebug "Obtained device queues."
+
             mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) (logDebug "Starting main loop." *> mainLoop)
 
   logInfo "Goodbye!"
