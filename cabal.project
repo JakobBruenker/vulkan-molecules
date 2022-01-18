@@ -1,0 +1,20 @@
+packages: .
+
+allow-newer:
+    *:haskus-utils-data
+  , *:haskus-utils-variant
+
+source-repository-package
+  type: git
+  location: https://gitlab.com/sheaf/fir.git
+  tag: 22ad3cd2b75012536c30d28a5ea2227e56bf689
+
+source-repository-package
+  type: git
+  location: https://github.com/haskus/packages
+  tag: 1ff5059e66d48144b76523bff1ace81dcd6df634
+  subdir: haskus-utils-data
+  subdir: haskus-utils-variant
+
+package dear-imgui
+  flags: -sdl2 +glfw -opengl2 -opengl3 +vulkan -examples
