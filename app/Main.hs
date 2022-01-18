@@ -10,7 +10,7 @@ import RIO.Text qualified as T
 import RIO.Vector qualified as V
 import Data.List.NonEmpty.Extra qualified as NE
 
-import Control.Lens (views, (??), _1)
+import Control.Lens (views, (??), _1, both)
 import Control.Monad.Extra (whileM)
 import Data.Bits (Bits((.&.)))
 import Options.Applicative
@@ -41,7 +41,7 @@ import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
 import TH (makeRioClassy)
-import Utils (traverseToSnd, plural)
+import Utils (traverseToSnd, plural, clamp)
 import Foreign (malloc, nullPtr, Storable (peek))
 import Data.Coerce (coerce)
 import Data.Foldable (find)
@@ -102,32 +102,28 @@ data App = MkApp { logFunc :: LogFunc
                  }
 makeRioClassy ''App
 
-data QueueFamilyIndices = MkQueueFamilyIndices { graphicsQueueFamily :: Word32
-                                               , presentQueueFamily  :: Word32
-                                               }
-makeRioClassy ''QueueFamilyIndices
-
 data Queues = MkQueues { graphicsQueue :: Queue
                        , presentQueue  :: Queue
                        }
 makeRioClassy ''Queues
 
-data SwapChainSupportDetails = MkSwapChainSupportDetails { swapChainCapabilities :: SurfaceCapabilitiesKHR
-                                                         , swapChainFormats      :: NonEmpty SurfaceFormatKHR
-                                                         , swapChainPresentModes :: NonEmpty PresentModeKHR
-                                                         }
-makeRioClassy ''SwapChainSupportDetails
-
 data VulkanApp = MkVulkanApp { app                     :: App
                              , window                  :: GLFW.Window
                              , inst                    :: Instance
                              , device                  :: Device
-                             , queueFamilyIndices      :: QueueFamilyIndices
                              , queues                  :: Queues
                              , surface                 :: SurfaceKHR
-                             , swapChainSupportDetails :: SwapChainSupportDetails
                              }
 makeRioClassy ''VulkanApp
+
+data QueueFamilyIndices = MkQueueFamilyIndices { graphicsQueueFamily :: Word32
+                                               , presentQueueFamily  :: Word32
+                                               }
+
+data SwapChainSupportDetails = MkSwapChainSupportDetails { swapChainCapabilities :: SurfaceCapabilitiesKHR
+                                                         , swapChainFormats      :: NonEmpty SurfaceFormatKHR
+                                                         , swapChainPresentModes :: NonEmpty PresentModeKHR
+                                                         }
 
 mkConfig :: Options -> Config
 mkConfig (MkOptions w h _ l) = MkConfig (MkWindowSize w h) l
@@ -255,8 +251,9 @@ pickPhysicalDevice inst surface = do
 
       pure $ MkQueueFamilyIndices <$> graphics <*> present
 
-    logResult name = maybe do logDebug $ "Couldn't find " <> name <> " queue family on candidate device."
-                           \i -> logDebug $ "Found " <> name <> " queue family (index " <> display i <> ")."
+    logResult name = maybe
+      do logDebug $ "Couldn't find " <> name <> " queue family on candidate device."
+      \i -> logDebug $ "Found " <> name <> " queue family (index " <> display i <> ")."
 
     checkDeviceExtensionSupport :: PhysicalDevice -> RIO env Bool
     checkDeviceExtensionSupport physDev = do
@@ -275,8 +272,57 @@ pickPhysicalDevice inst surface = do
 deviceExtensions :: Vector ByteString
 deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
+
   ]
 
+swapChainCreateInfo :: GLFW.Window -> SurfaceKHR -> SwapChainSupportDetails -> QueueFamilyIndices
+                    -> RIO env (SwapchainCreateInfoKHR '[])
+swapChainCreateInfo window
+                    surface
+                    (MkSwapChainSupportDetails capabilities formats _)
+                    (MkQueueFamilyIndices{graphicsQueueFamily, presentQueueFamily}) = do
+  imageExtent <- liftIO extent
+  pure zero{ surface
+           , minImageCount = imageCount
+           , imageFormat
+           , imageColorSpace
+           , imageExtent
+           , imageArrayLayers = 1
+           , imageUsage = IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+           , imageSharingMode
+           , queueFamilyIndices
+           , preTransform = currentTransform
+           , compositeAlpha = COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+           , presentMode
+           , clipped = True
+           }
+  where
+    imageSharingMode | graphicsQueueFamily == presentQueueFamily = SHARING_MODE_EXCLUSIVE
+                     | otherwise                                 = SHARING_MODE_CONCURRENT
+    queueFamilyIndices = V.fromList $ nub [graphicsQueueFamily, presentQueueFamily]
+    imageCount = clamp (minImageCount, bool maxBound maxImageCount $ maxImageCount > 0) desired
+      where desired = minImageCount + 1
+    SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} = liftA2 fromMaybe NE.head
+            (find (== SurfaceFormatKHR FORMAT_R8G8B8A8_SRGB COLOR_SPACE_SRGB_NONLINEAR_KHR))
+            formats
+    presentMode = PRESENT_MODE_FIFO_KHR
+    extent | currentWidth /= maxBound = pure currentExtent
+           | otherwise = do
+             (fbWidth, fbHeight) <- over both fromIntegral <$> GLFW.getFramebufferSize window
+             let width = clamp (minWidth, maxWidth) fbWidth
+                 height = clamp (minHeight, maxHeight) fbHeight
+             pure Extent2D{width, height}
+      where Extent2D{width = currentWidth} = currentExtent
+            Extent2D{width = minWidth, height = minHeight} = minImageExtent
+            Extent2D{width = maxWidth, height = maxHeight} = maxImageExtent
+
+    SurfaceCapabilitiesKHR{ currentExtent, currentTransform
+                          , minImageExtent, maxImageExtent
+                          , minImageCount, maxImageCount
+                          } = capabilities
+
+-- TODO this is probably unnecessary, since the library says it already throws
+-- an exception if the result is not SUCCESS
 catchVk :: MonadIO m => m (Result, a) -> m a
 catchVk = (=<<) \case
   (SUCCESS, x) -> pure x
@@ -322,6 +368,11 @@ runApp = do
               join bitraverse (getDeviceQueue device ?? 0) (graphicsQueueFamily, presentQueueFamily)
             logDebug "Obtained device queues."
 
-            mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) (logDebug "Starting main loop." *> mainLoop)
+            scInfo <- swapChainCreateInfo window surface swapChainSupportDetails queueFamilyIndices
+            withSwapchainKHR device scInfo Nothing bracket \swapchain -> do
+              logDebug "Created swapchain."
+
+              mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) do logDebug "Starting main loop."
+                                                                    mainLoop
 
   logInfo "Goodbye!"
