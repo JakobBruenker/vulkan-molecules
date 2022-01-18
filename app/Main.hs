@@ -48,6 +48,7 @@ import Data.Foldable (find)
 import Control.Applicative (ZipList(ZipList))
 import Data.List (nub)
 import Control.Monad.Trans.Maybe (runMaybeT)
+import Control.Monad.Trans.Cont (evalContT, ContT (ContT))
 
 data AppException
   = GLFWInitError
@@ -85,7 +86,7 @@ data Options = MkOptions { optWidth            :: Natural
                          }
 
 -- To keep track of whether GLFW is initialized
-data GLFWToken s = UnsafeMkGLFWToken
+data GLFWToken = UnsafeMkGLFWToken
 
 data WindowSize = MkWindowSize { windowWidth  :: Natural
                                , windowHeight :: Natural
@@ -163,14 +164,15 @@ main = do
       logError $ display @SomeException e
       exitFailure
 
-withGLFW :: (forall s . GLFWToken s -> RIO env a) -> RIO env a
+withGLFW :: (GLFWToken -> RIO env a) -> RIO env a
 withGLFW action = bracket
   do liftIO GLFW.init
   do const $ liftIO GLFW.terminate
   \success -> if | success   -> action UnsafeMkGLFWToken
                  | otherwise -> throwIO GLFWInitError
 
-withWindow :: HasWindowSize env => GLFWToken s -> (GLFW.Window -> RIO env a) -> RIO env a
+withWindow :: (MonadIO m, MonadUnliftIO m, MonadReader env m, HasWindowSize env)
+           => GLFWToken -> (GLFW.Window -> m a) -> m a
 withWindow _ action = do
   width <- views windowWidthL fromIntegral
   height <- views windowHeightL fromIntegral
@@ -196,7 +198,8 @@ mainLoop = whileM do
   liftIO GLFW.waitEvents -- XXX might need pollEvents instead
   liftIO . fmap not . GLFW.windowShouldClose =<< view windowL
 
-validationLayers :: HasEnableValidationLayers env => RIO env (Vector ByteString)
+validationLayers :: (MonadIO m, MonadReader env m, HasEnableValidationLayers env)
+                 => m (Vector ByteString)
 validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure []) do
    properties <- catchVk enumerateInstanceLayerProperties
    case NE.nonEmpty $ filter (not . (properties `hasLayer`)) layers of
@@ -206,9 +209,9 @@ validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure
     hasLayer props = V.elem ?? V.map layerName props
     layers = ["VK_LAYER_KHRONOS_validation"]
 
-pickPhysicalDevice :: HasLogFunc env
+pickPhysicalDevice :: (MonadIO m, MonadReader env m, HasLogFunc env)
                    => Instance -> SurfaceKHR
-                   -> RIO env (PhysicalDevice, SwapChainSupportDetails, QueueFamilyIndices)
+                   -> m (PhysicalDevice, SwapChainSupportDetails, QueueFamilyIndices)
 pickPhysicalDevice inst surface = do
   catchVk (enumeratePhysicalDevices inst) >>= do
     toList >>> NE.nonEmpty >>> maybe
@@ -233,7 +236,7 @@ pickPhysicalDevice inst surface = do
             do throwIO VkNoSuitableDevicesError
             do (fst . NE.maximumOn1 snd <$>) . mapM (traverseToSnd $ score . view _1)
   where
-    score :: PhysicalDevice -> RIO env Integer
+    score :: MonadIO m => PhysicalDevice -> m Integer
     score = (bool 1000 0 . (PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType <$>) .
       getPhysicalDeviceProperties
 
@@ -255,12 +258,12 @@ pickPhysicalDevice inst surface = do
       do logDebug $ "Couldn't find " <> name <> " queue family on candidate device."
       \i -> logDebug $ "Found " <> name <> " queue family (index " <> display i <> ")."
 
-    checkDeviceExtensionSupport :: PhysicalDevice -> RIO env Bool
+    checkDeviceExtensionSupport :: MonadIO m => PhysicalDevice -> m Bool
     checkDeviceExtensionSupport physDev = do
       exts <- fmap extensionName <$> catchVk (enumerateDeviceExtensionProperties physDev Nothing)
       pure $ V.all (`elem` exts) deviceExtensions
 
-    querySwapChainSupport :: PhysicalDevice -> RIO env (Maybe SwapChainSupportDetails)
+    querySwapChainSupport :: MonadIO m => PhysicalDevice -> m (Maybe SwapChainSupportDetails)
     querySwapChainSupport physDev = runMaybeT do
       let formats      = getPhysicalDeviceSurfaceFormatsKHR physDev surface
           presentModes = getPhysicalDeviceSurfacePresentModesKHR physDev surface
@@ -275,8 +278,9 @@ deviceExtensions =
 
   ]
 
-swapChainCreateInfo :: GLFW.Window -> SurfaceKHR -> SwapChainSupportDetails -> QueueFamilyIndices
-                    -> RIO env (SwapchainCreateInfoKHR '[])
+swapChainCreateInfo :: MonadIO m
+                    => GLFW.Window -> SurfaceKHR -> SwapChainSupportDetails -> QueueFamilyIndices
+                    -> m (SwapchainCreateInfoKHR '[])
 swapChainCreateInfo window
                     surface
                     (MkSwapChainSupportDetails capabilities formats _)
@@ -329,50 +333,52 @@ catchVk = (=<<) \case
   (err    , _) -> throwIO $ VkGenericError err
 
 runApp :: HasApp env => RIO env ()
-runApp = do
-  logDebug "Started boxticle"
+runApp = evalContT do
+  logDebug "Started boxticle."
 
-  withGLFW \glfwToken -> do
-    logDebug "Initialized GLFW."
+  glfwToken <- ContT withGLFW
+  logDebug "Initialized GLFW."
 
-    unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
-    logDebug "Verified GLFW Vulkan support."
+  unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
+  logDebug "Verified GLFW Vulkan support."
 
-    enabledExtensionNames <- V.fromList <$>
-      do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
-    logDebug $ "Required extensions for GLFW: " <> displayShow enabledExtensionNames
+  enabledExtensionNames <- V.fromList <$>
+    do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
+  logDebug $ "Required extensions for GLFW: " <> displayShow enabledExtensionNames
 
-    enabledLayerNames <- validationLayers
-    let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
-        instanceCreateInfo = zero{applicationInfo, enabledExtensionNames, enabledLayerNames}
+  enabledLayerNames <- validationLayers
+  let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
+      instanceCreateInfo = zero{applicationInfo, enabledExtensionNames, enabledLayerNames}
 
-    withInstance instanceCreateInfo Nothing bracket \inst -> do
-      withWindow glfwToken \window -> do
-        logDebug "Created window."
+  inst <- ContT $ withInstance instanceCreateInfo Nothing bracket
+  window <- ContT $ withWindow glfwToken
+  logDebug "Created window."
 
-        withWindowSurface inst window \surface -> do
-          (physDev, swapChainSupportDetails, queueFamilyIndices@(MkQueueFamilyIndices{..})) <-
-            pickPhysicalDevice inst surface
-          logDebug "Picked device."
+  surface <- ContT $ withWindowSurface inst window
+  logDebug "Created surface."
 
-          let queueCreateInfos = V.fromList (nub [graphicsQueueFamily, presentQueueFamily]) <&>
-                \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1]}
-              deviceCreateInfo = zero{ queueCreateInfos
-                                     , enabledLayerNames
-                                     , enabledExtensionNames = deviceExtensions
-                                     }
-          withDevice physDev deviceCreateInfo Nothing bracket \device -> do
-            logDebug "Created logical device."
+  (physDev, swapChainSupportDetails, queueFamilyIndices@(MkQueueFamilyIndices{..})) <-
+    pickPhysicalDevice inst surface
+  logDebug "Picked device."
 
-            queues <- uncurry MkQueues <$>
-              join bitraverse (getDeviceQueue device ?? 0) (graphicsQueueFamily, presentQueueFamily)
-            logDebug "Obtained device queues."
+  let queueCreateInfos = V.fromList (nub [graphicsQueueFamily, presentQueueFamily]) <&>
+        \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1]}
+      deviceCreateInfo = zero{ queueCreateInfos
+                             , enabledLayerNames
+                             , enabledExtensionNames = deviceExtensions
+                             }
+  device <- ContT $ withDevice physDev deviceCreateInfo Nothing bracket
+  logDebug "Created logical device."
 
-            scInfo <- swapChainCreateInfo window surface swapChainSupportDetails queueFamilyIndices
-            withSwapchainKHR device scInfo Nothing bracket \swapchain -> do
-              logDebug "Created swapchain."
+  queues <- uncurry MkQueues <$>
+    join bitraverse (getDeviceQueue device ?? 0) (graphicsQueueFamily, presentQueueFamily)
+  logDebug "Obtained device queues."
 
-              mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) do logDebug "Starting main loop."
-                                                                    mainLoop
+  scInfo <- swapChainCreateInfo window surface swapChainSupportDetails queueFamilyIndices
+  swapchain <- ContT $ withSwapchainKHR device scInfo Nothing bracket
+  logDebug "Created swapchain."
+
+  lift $ mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) do logDebug "Starting main loop."
+                                                               mainLoop
 
   logInfo "Goodbye!"
