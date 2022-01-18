@@ -10,7 +10,7 @@ import RIO.Text qualified as T
 import RIO.Vector qualified as V
 import Data.List.NonEmpty.Extra qualified as NE
 
-import Control.Lens (views, (??))
+import Control.Lens (views, (??), _1)
 import Control.Monad.Extra (whileM)
 import Data.Bits (Bits((.&.)))
 import Options.Applicative
@@ -47,6 +47,7 @@ import Data.Coerce (coerce)
 import Data.Foldable (find)
 import Control.Applicative (ZipList(ZipList))
 import Data.List (nub)
+import Control.Monad.Trans.Maybe (runMaybeT)
 
 data AppException
   = GLFWInitError
@@ -111,13 +112,20 @@ data Queues = MkQueues { graphicsQueue :: Queue
                        }
 makeRioClassy ''Queues
 
-data VulkanApp = MkVulkanApp { app                :: App
-                             , window             :: GLFW.Window
-                             , inst               :: Instance
-                             , device             :: Device
-                             , queueFamilyIndices :: QueueFamilyIndices
-                             , queues             :: Queues
-                             , surface            :: SurfaceKHR
+data SwapChainSupportDetails = MkSwapChainSupportDetails { swapChainCapabilities :: SurfaceCapabilitiesKHR
+                                                         , swapChainFormats      :: NonEmpty SurfaceFormatKHR
+                                                         , swapChainPresentModes :: NonEmpty PresentModeKHR
+                                                         }
+makeRioClassy ''SwapChainSupportDetails
+
+data VulkanApp = MkVulkanApp { app                     :: App
+                             , window                  :: GLFW.Window
+                             , inst                    :: Instance
+                             , device                  :: Device
+                             , queueFamilyIndices      :: QueueFamilyIndices
+                             , queues                  :: Queues
+                             , surface                 :: SurfaceKHR
+                             , swapChainSupportDetails :: SwapChainSupportDetails
                              }
 makeRioClassy ''VulkanApp
 
@@ -204,7 +212,7 @@ validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure
 
 pickPhysicalDevice :: HasLogFunc env
                    => Instance -> SurfaceKHR
-                   -> RIO env ( PhysicalDevice , QueueFamilyIndices)
+                   -> RIO env (PhysicalDevice, SwapChainSupportDetails, QueueFamilyIndices)
 pickPhysicalDevice inst surface = do
   catchVk (enumeratePhysicalDevices inst) >>= do
     toList >>> NE.nonEmpty >>> maybe
@@ -212,23 +220,29 @@ pickPhysicalDevice inst surface = do
       \physDevs -> do
         let lds = length physDevs
         logDebug $ "Found " <> display lds <> plural " physical device" lds <> "."
-        candidates <- filterM checkDeviceExtensionSupport $ toList physDevs
 
-        let lcs = length candidates
-        logDebug $ "Found " <> display lcs <> plural " physical device" lcs <>
+        extCandidates <- filterM checkDeviceExtensionSupport $ toList physDevs
+        let les = length extCandidates
+        logDebug $ "Found " <> display les <> plural " physical device" les <>
           " supporting the extensions " <> displayShow deviceExtensions <> "."
 
-        mapMaybeM (fmap sequence . traverseToSnd findQueueFamilies) candidates <&>
-          NE.nonEmpty >>= maybe
+        scCandidates <- mapMaybeM (fmap sequence . traverseToSnd querySwapChainSupport) extCandidates
+        let lss = length scCandidates
+        logDebug $ "Found " <> display lss <> plural " physical device" lss <>
+          " with sufficient swap chain support."
+
+        forMaybeM scCandidates (\(d, sc) -> runMaybeT do
+          Just qf <- findQueueFamilies d
+          pure (d, sc, qf)) <&> NE.nonEmpty >>= maybe
             do throwIO VkNoSuitableDevicesError
-            do (fst . NE.maximumOn1 snd <$>) . mapM (traverseToSnd $ score . fst)
+            do (fst . NE.maximumOn1 snd <$>) . mapM (traverseToSnd $ score . view _1)
   where
     score :: PhysicalDevice -> RIO env Integer
     score = (bool 1000 0 . (PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType <$>) .
       getPhysicalDeviceProperties
 
-    findQueueFamilies :: HasLogFunc env
-                      => PhysicalDevice -> RIO env (Maybe QueueFamilyIndices)
+    findQueueFamilies :: (MonadReader env m, MonadIO m, HasLogFunc env)
+                      => PhysicalDevice -> m (Maybe QueueFamilyIndices)
     findQueueFamilies physDev = do
       props <- getPhysicalDeviceQueueFamilyProperties physDev
       let graphics = fromIntegral <$> V.findIndex (\p -> queueFlags p .&. QUEUE_GRAPHICS_BIT > zero) props
@@ -248,6 +262,15 @@ pickPhysicalDevice inst surface = do
     checkDeviceExtensionSupport physDev = do
       exts <- fmap extensionName <$> catchVk (enumerateDeviceExtensionProperties physDev Nothing)
       pure $ V.all (`elem` exts) deviceExtensions
+
+    querySwapChainSupport :: PhysicalDevice -> RIO env (Maybe SwapChainSupportDetails)
+    querySwapChainSupport physDev = runMaybeT do
+      let formats      = getPhysicalDeviceSurfaceFormatsKHR physDev surface
+          presentModes = getPhysicalDeviceSurfacePresentModesKHR physDev surface
+      swapChainCapabilities      <- getPhysicalDeviceSurfaceCapabilitiesKHR physDev surface
+      Just swapChainFormats      <- NE.nonEmpty . toList <$> catchVk formats
+      Just swapChainPresentModes <- NE.nonEmpty . toList <$> catchVk presentModes
+      pure $ MkSwapChainSupportDetails{..}
 
 deviceExtensions :: Vector ByteString
 deviceExtensions =
@@ -282,7 +305,8 @@ runApp = do
         logDebug "Created window."
 
         withWindowSurface inst window \surface -> do
-          (physDev, queueFamilyIndices@(MkQueueFamilyIndices{..})) <- pickPhysicalDevice inst surface
+          (physDev, swapChainSupportDetails, queueFamilyIndices@(MkQueueFamilyIndices{..})) <-
+            pickPhysicalDevice inst surface
           logDebug "Picked device."
 
           let queueCreateInfos = V.fromList (nub [graphicsQueueFamily, presentQueueFamily]) <&>
