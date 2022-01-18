@@ -1,4 +1,5 @@
-{-# Language TemplateHaskellQuotes #-}
+{-# LANGUAGE TemplateHaskellQuotes #-}
+{-# LANGUAGE CPP #-}
 
 module TH where
 

@@ -42,10 +42,13 @@ import Vulkan.CStruct.Extends
 
 import TH (makeRioClassy)
 import Utils (traverseToSnd)
+import Foreign (malloc, nullPtr, Storable (peek))
+import Data.Coerce (coerce)
 
 data AppException
   = GLFWInitError
   | GLFWWindowError
+  | GLFWVulkanNotSupportedError
   | VkGenericError Result
   | VkValidationLayersNotSupported (NonEmpty ByteString)
   | VkNoPhysicalDevicesError
@@ -60,6 +63,7 @@ instance Display AppException where
   display = \case
     GLFWInitError -> "Failed to initialize GLFW."
     GLFWWindowError -> "Failed to create window."
+    GLFWVulkanNotSupportedError -> "GLFW failed to find Vulkan loader or ICD."
     VkGenericError r -> "Vulkan returned error: " <> displayShow r
     VkValidationLayersNotSupported ls ->
       "Requested validation layer" <> num <> " not supported: " <>
@@ -162,6 +166,13 @@ withWindow _ action = do
     do liftIO . mapM_ GLFW.destroyWindow
     do maybe (throwIO GLFWWindowError) action
 
+withWindowSurface :: Instance -> GLFW.Window -> (SurfaceKHR -> RIO env a) -> RIO env a
+withWindowSurface inst window = bracket
+  do liftIO do surfacePtr <- malloc @SurfaceKHR
+               result <- GLFW.createWindowSurface (instanceHandle inst) window nullPtr surfacePtr
+               peek =<< catchVk (pure (coerce @Int32 result, surfacePtr))
+  do destroySurfaceKHR inst ?? Nothing
+
 mainLoop :: HasVulkanApp env => RIO env ()
 mainLoop = whileM do
   liftIO GLFW.waitEvents -- XXX might need pollEvents instead
@@ -185,7 +196,7 @@ pickPhysicalDevice inst = do
       do throwIO VkNoPhysicalDevicesError
       \physDevs -> do
         let lds = length physDevs
-        logDebug $ "Found " <> display lds <> " physical device" <> bool "s" "" (lds == 1)
+        logDebug $ "Found " <> display lds <> " physical device" <> bool "s" "" (lds == 1) <> "."
         mapMaybeM (fmap sequence . traverseToSnd findQueueFamily) (toList physDevs) <&>
           NE.nonEmpty >>= maybe
             do throwIO VkNoSuitableDevicesError
@@ -209,21 +220,33 @@ runApp :: HasApp env => RIO env ()
 runApp = do
   logDebug "Started boxticle"
 
-  enabledExtensionNames <- V.fromList <$>
-    do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
-  enabledLayerNames <- validationLayers
-  let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
-      instanceCreateInfo =
-        zero{applicationInfo, enabledExtensionNames, enabledLayerNames}
+  withGLFW $ \glfwToken -> do
+    logDebug "Initialized GLFW."
 
-  withInstance instanceCreateInfo Nothing bracket \inst ->
-    withGLFW $ withWindow ?? \window -> do
-      (physDev, queueFamilyIndex) <- pickPhysicalDevice inst
-      let queueCreateInfos = [SomeStruct zero{queueFamilyIndex, queuePriorities = [1]}]
-          deviceCreateInfo = zero{queueCreateInfos, enabledLayerNames}
-      withDevice physDev deviceCreateInfo Nothing bracket \device -> do
-        deviceQueue <- getDeviceQueue device queueFamilyIndex 0
-        logDebug "Successfully initialized GLFW and created window, instance, device, and device queue"
-        mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) mainLoop
+    unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
+    logDebug "Verified GLFW Vulkan support."
+
+    enabledExtensionNames <- V.fromList <$>
+      do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
+    logDebug $ "Required extensions: " <> displayShow enabledExtensionNames
+
+    enabledLayerNames <- validationLayers
+    let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
+        instanceCreateInfo = zero{applicationInfo, enabledExtensionNames, enabledLayerNames}
+
+    withInstance instanceCreateInfo Nothing bracket \inst -> do
+      withWindow glfwToken \window -> do
+        logDebug "Created window."
+        (physDev, queueFamilyIndex) <- pickPhysicalDevice inst
+        logDebug "Picked device."
+        let queueCreateInfos = [SomeStruct zero{queueFamilyIndex, queuePriorities = [1]}]
+            deviceCreateInfo = zero{queueCreateInfos, enabledLayerNames}
+        withDevice physDev deviceCreateInfo Nothing bracket \device -> do
+          logDebug "Created logical device."
+          deviceQueue <- getDeviceQueue device queueFamilyIndex 0
+          logDebug "Obtained device queue."
+          withWindowSurface inst window \surface -> do
+            logDebug "Created window surface."
+            mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) mainLoop
 
   logInfo "Goodbye!"
