@@ -44,6 +44,7 @@ import TH (makeRioClassy)
 import Utils (traverseToSnd)
 import Foreign (malloc, nullPtr, Storable (peek))
 import Data.Coerce (coerce)
+import Data.Foldable (find)
 
 data AppException
   = GLFWInitError
@@ -98,12 +99,18 @@ data App = MkApp { logFunc :: LogFunc
                  }
 makeRioClassy ''App
 
-data VulkanApp = MkVulkanApp { app         :: App
-                             , window      :: GLFW.Window
-                             , inst        :: Instance
-                             , device      :: Device
-                             , deviceQueue :: Queue
-                             , surface     :: SurfaceKHR
+data QueueFamilyIndices = MkQueueFamilyIndices { graphicsQueueFamily :: Word32
+                                               , presentQueueFamily  :: Word32
+                                               }
+makeRioClassy ''QueueFamilyIndices
+
+data VulkanApp = MkVulkanApp { app                :: App
+                             , window             :: GLFW.Window
+                             , inst               :: Instance
+                             , device             :: Device
+                             , queueFamilyIndices :: QueueFamilyIndices
+                             , deviceQueue        :: Queue
+                             , surface            :: SurfaceKHR
                              }
 makeRioClassy ''VulkanApp
 
@@ -189,15 +196,16 @@ validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure
     layers = ["VK_LAYER_KHRONOS_validation"]
 
 pickPhysicalDevice :: HasLogFunc env
-                   => Instance -> RIO env (PhysicalDevice, "queueFamilyIndex" ::: Word32)
-pickPhysicalDevice inst = do
+                   => Instance -> SurfaceKHR
+                   -> RIO env ( PhysicalDevice , QueueFamilyIndices)
+pickPhysicalDevice inst surface = do
   catchVk (enumeratePhysicalDevices inst) >>= do
     toList >>> NE.nonEmpty >>> maybe
       do throwIO VkNoPhysicalDevicesError
       \physDevs -> do
         let lds = length physDevs
         logDebug $ "Found " <> display lds <> " physical device" <> bool "s" "" (lds == 1) <> "."
-        mapMaybeM (fmap sequence . traverseToSnd findQueueFamily) (toList physDevs) <&>
+        mapMaybeM (fmap sequence . traverseToSnd findQueueFamilies) (toList physDevs) <&>
           NE.nonEmpty >>= maybe
             do throwIO VkNoSuitableDevicesError
             do (fst . NE.maximumOn1 snd <$>) . mapM (traverseToSnd $ score . fst)
@@ -206,10 +214,22 @@ pickPhysicalDevice inst = do
     score = (bool 1000 0 . (PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType <$>) .
       getPhysicalDeviceProperties
 
-    findQueueFamily :: PhysicalDevice -> RIO env (Maybe Word32)
-    findQueueFamily physDev =
-      fmap fromIntegral . V.findIndex (\p -> queueFlags p .&. QUEUE_GRAPHICS_BIT > zero) <$>
-        getPhysicalDeviceQueueFamilyProperties physDev
+    findQueueFamilies :: HasLogFunc env
+                      => PhysicalDevice -> RIO env (Maybe QueueFamilyIndices)
+    findQueueFamilies physDev = do
+      props <- getPhysicalDeviceQueueFamilyProperties physDev
+      let graphics = fromIntegral <$> V.findIndex (\p -> queueFlags p .&. QUEUE_GRAPHICS_BIT > zero) props
+      if | isJust graphics -> logDebug "Found graphics queue family."
+         | otherwise       -> logDebug "Couldn't find graphics queue family on candidate device."
+
+      let indices :: [Word32]
+          indices = [0..fromIntegral (length props - 1)]
+          surfaceSupport = getPhysicalDeviceSurfaceSupportKHR physDev ?? surface
+      present <- fmap fst . find snd <$> (traverse . traverseToSnd) surfaceSupport indices
+      if | isJust present -> logDebug "Found present queue family."
+         | otherwise      -> logDebug "Couldn't find present queue family on candidate device."
+
+      pure $ MkQueueFamilyIndices <$> graphics <*> present
 
 catchVk :: MonadIO m => m (Result, a) -> m a
 catchVk = (=<<) \case
@@ -220,7 +240,7 @@ runApp :: HasApp env => RIO env ()
 runApp = do
   logDebug "Started boxticle"
 
-  withGLFW $ \glfwToken -> do
+  withGLFW \glfwToken -> do
     logDebug "Initialized GLFW."
 
     unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
@@ -237,16 +257,15 @@ runApp = do
     withInstance instanceCreateInfo Nothing bracket \inst -> do
       withWindow glfwToken \window -> do
         logDebug "Created window."
-        (physDev, queueFamilyIndex) <- pickPhysicalDevice inst
-        logDebug "Picked device."
-        let queueCreateInfos = [SomeStruct zero{queueFamilyIndex, queuePriorities = [1]}]
-            deviceCreateInfo = zero{queueCreateInfos, enabledLayerNames}
-        withDevice physDev deviceCreateInfo Nothing bracket \device -> do
-          logDebug "Created logical device."
-          deviceQueue <- getDeviceQueue device queueFamilyIndex 0
-          logDebug "Obtained device queue."
-          withWindowSurface inst window \surface -> do
-            logDebug "Created window surface."
-            mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) mainLoop
+        withWindowSurface inst window \surface -> do
+          (physDev, queueFamilyIndices@(MkQueueFamilyIndices{..})) <- pickPhysicalDevice inst surface
+          logDebug "Picked device."
+          let queueCreateInfos = [SomeStruct zero{queueFamilyIndex = graphicsQueueFamily, queuePriorities = [1]}]
+              deviceCreateInfo = zero{queueCreateInfos, enabledLayerNames}
+          withDevice physDev deviceCreateInfo Nothing bracket \device -> do
+            logDebug "Created logical device."
+            deviceQueue <- getDeviceQueue device graphicsQueueFamily 0
+            logDebug "Obtained device queue."
+            mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) (logDebug "Starting main loop." *> mainLoop)
 
   logInfo "Goodbye!"
