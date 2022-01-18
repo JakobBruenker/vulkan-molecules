@@ -108,9 +108,10 @@ data Queues = MkQueues { graphicsQueue :: Queue
                        }
 makeRioClassy ''Queues
 
-data SwapchainDetails = MkSwapchainDetails { swapchainFormat :: SurfaceFormatKHR
-                                           , swapchainExtent :: Extent2D
-                                           , swapchainImages :: Vector Image
+data SwapchainDetails = MkSwapchainDetails { swapchainFormat     :: SurfaceFormatKHR
+                                           , swapchainExtent     :: Extent2D
+                                           , swapchainImages     :: Vector Image
+                                           , swapchainImageViews :: Vector ImageView
                                            }
 makeRioClassy ''SwapchainDetails
 
@@ -284,7 +285,6 @@ pickPhysicalDevice inst surface = do
 deviceExtensions :: Vector ByteString
 deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
-
   ]
 
 swapchainCreateInfo :: MonadIO m
@@ -333,6 +333,19 @@ swapchainCreateInfo window
                           , minImageExtent, maxImageExtent
                           , minImageCount, maxImageCount
                           } = capabilities
+
+withImageViews :: MonadUnliftIO m => Device -> Format -> Vector Image -> ContT r m (Vector ImageView)
+withImageViews device format =
+  traverse \image -> withImageView device ivInfo{image} Nothing bracketCont
+  where
+    ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
+                 , format
+                 , subresourceRange
+                 }
+    subresourceRange = zero{ aspectMask = IMAGE_ASPECT_COLOR_BIT
+                           , levelCount = 1
+                           , layerCount = 1
+                           }
 
 -- TODO this is probably unnecessary, since the library says it already throws
 -- an exception if the result is not SUCCESS
@@ -388,6 +401,7 @@ acquireGraphicsResources = do
   logDebug "Created swapchain."
 
   swapchainImages <- catchVk $ getSwapchainImagesKHR device swapchain
+  swapchainImageViews <- withImageViews device imageFormat swapchainImages
   let swapchainFormat  = SurfaceFormatKHR imageFormat imageColorSpace
       swapchainDetails = MkSwapchainDetails{..}
 
