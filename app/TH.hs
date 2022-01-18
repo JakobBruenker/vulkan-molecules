@@ -1,5 +1,4 @@
 {-# LANGUAGE TemplateHaskellQuotes #-}
-{-# LANGUAGE CPP #-}
 
 module TH where
 
@@ -9,6 +8,8 @@ import RIO.Lens
 import Language.Haskell.TH
 
 type Field = VarBangType
+
+{-# ANN makeRioClassy ("HLint: ignore Redundant bracket" :: String) #-}
 
 makeRioClassy :: Name -> DecsQ
 makeRioClassy tyConName = do
