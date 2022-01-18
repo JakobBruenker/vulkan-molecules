@@ -45,6 +45,8 @@ import Utils (traverseToSnd)
 import Foreign (malloc, nullPtr, Storable (peek))
 import Data.Coerce (coerce)
 import Data.Foldable (find)
+import Control.Applicative (ZipList(ZipList))
+import Data.List (nub)
 
 data AppException
   = GLFWInitError
@@ -104,12 +106,18 @@ data QueueFamilyIndices = MkQueueFamilyIndices { graphicsQueueFamily :: Word32
                                                }
 makeRioClassy ''QueueFamilyIndices
 
+data Queues = MkQueues { graphicsQueue :: Queue
+                       , presentQueue  :: Queue
+                       }
+
+makeRioClassy ''Queues
+
 data VulkanApp = MkVulkanApp { app                :: App
                              , window             :: GLFW.Window
                              , inst               :: Instance
                              , device             :: Device
                              , queueFamilyIndices :: QueueFamilyIndices
-                             , deviceQueue        :: Queue
+                             , queues             :: Queues
                              , surface            :: SurfaceKHR
                              }
 makeRioClassy ''VulkanApp
@@ -219,17 +227,17 @@ pickPhysicalDevice inst surface = do
     findQueueFamilies physDev = do
       props <- getPhysicalDeviceQueueFamilyProperties physDev
       let graphics = fromIntegral <$> V.findIndex (\p -> queueFlags p .&. QUEUE_GRAPHICS_BIT > zero) props
-      if | isJust graphics -> logDebug "Found graphics queue family."
-         | otherwise       -> logDebug "Couldn't find graphics queue family on candidate device."
+      logResult "graphics" graphics
 
-      let indices :: [Word32]
-          indices = [0..fromIntegral (length props - 1)]
+      let indices = ZipList (toList props) *> [0..]
           surfaceSupport = getPhysicalDeviceSurfaceSupportKHR physDev ?? surface
       present <- fmap fst . find snd <$> (traverse . traverseToSnd) surfaceSupport indices
-      if | isJust present -> logDebug "Found present queue family."
-         | otherwise      -> logDebug "Couldn't find present queue family on candidate device."
+      logResult "present" present
 
       pure $ MkQueueFamilyIndices <$> graphics <*> present
+
+    logResult name = maybe do logDebug $ "Couldn't find " <> name <> " queue family on candidate device."
+                           \i -> logDebug $ "Found " <> name <> " queue family (index " <> display i <> ")."
 
 catchVk :: MonadIO m => m (Result, a) -> m a
 catchVk = (=<<) \case
@@ -260,12 +268,14 @@ runApp = do
         withWindowSurface inst window \surface -> do
           (physDev, queueFamilyIndices@(MkQueueFamilyIndices{..})) <- pickPhysicalDevice inst surface
           logDebug "Picked device."
-          let queueCreateInfos = [SomeStruct zero{queueFamilyIndex = graphicsQueueFamily, queuePriorities = [1]}]
+          let queueCreateInfos = V.fromList (nub [graphicsQueueFamily, presentQueueFamily]) <&>
+                \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1]}
               deviceCreateInfo = zero{queueCreateInfos, enabledLayerNames}
           withDevice physDev deviceCreateInfo Nothing bracket \device -> do
             logDebug "Created logical device."
-            deviceQueue <- getDeviceQueue device graphicsQueueFamily 0
-            logDebug "Obtained device queue."
+            queues <- uncurry MkQueues <$>
+              join bitraverse (getDeviceQueue device ?? 0) (graphicsQueueFamily, presentQueueFamily)
+            logDebug "Obtained device queues."
             mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) (logDebug "Starting main loop." *> mainLoop)
 
   logInfo "Goodbye!"
