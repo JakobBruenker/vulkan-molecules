@@ -11,7 +11,7 @@ import RIO.Vector qualified as V
 import Data.List.NonEmpty.Extra qualified as NE
 
 import Control.Lens (views, (??), _1, both)
-import Control.Monad.Extra (whileM)
+import Control.Monad.Extra (whileM, fromMaybeM, ifM)
 import Data.Bits (Bits((.&.)))
 import Options.Applicative
     ( (<**>),
@@ -41,14 +41,14 @@ import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
 import TH (makeRioClassy)
-import Utils (traverseToSnd, plural, clamp)
+import Utils (traverseToSnd, plural, clamp, bracketCont)
 import Foreign (malloc, nullPtr, Storable (peek))
 import Data.Coerce (coerce)
 import Data.Foldable (find)
-import Control.Applicative (ZipList(ZipList))
+import Control.Applicative (ZipList(..))
 import Data.List (nub)
 import Control.Monad.Trans.Maybe (runMaybeT)
-import Control.Monad.Trans.Cont (evalContT, ContT (ContT))
+import Control.Monad.Trans.Cont (evalContT, ContT(..))
 
 data AppException
   = GLFWInitError
@@ -114,13 +114,17 @@ data SwapchainDetails = MkSwapchainDetails { swapchainFormat :: SurfaceFormatKHR
                                            }
 makeRioClassy ''SwapchainDetails
 
-data VulkanApp = MkVulkanApp { app              :: App
-                             , window           :: GLFW.Window
-                             , inst             :: Instance
-                             , device           :: Device
-                             , queues           :: Queues
-                             , surface          :: SurfaceKHR
-                             , swapchainDetails :: SwapchainDetails
+data GraphicsResources = MkGraphicsResources { window           :: GLFW.Window
+                                             , inst             :: Instance
+                                             , device           :: Device
+                                             , queues           :: Queues
+                                             , surface          :: SurfaceKHR
+                                             , swapchainDetails :: SwapchainDetails
+                                             }
+makeRioClassy ''GraphicsResources
+
+data VulkanApp = MkVulkanApp { app               :: App
+                             , graphicsResources :: GraphicsResources
                              }
 makeRioClassy ''VulkanApp
 
@@ -160,50 +164,48 @@ options = MkOptions
      <> help "Enable Vulkan validation layers")
 
 main :: IO ()
-main = do
-  opts <- execParser (Opt.info (options <**> helper) fullDesc)
+main = evalContT do
+  opts <- lift $ execParser (Opt.info (options <**> helper) fullDesc)
   logOptions <- logOptionsHandle stderr (optVerbose opts)
-  withLogFunc logOptions \logFunc -> do
-    let app = MkApp { logFunc = logFunc
-                    , config = mkConfig opts
-                    }
-    runRIO app $ catch runApp \e -> do
-      logError $ display @SomeException e
-      exitFailure
+  logFunc <- ContT $ withLogFunc logOptions
+  runRIO (MkApp {logFunc, config = mkConfig opts}) $ catch runApp \e -> do
+    logError $ display @SomeException e
+    exitFailure
 
-withGLFW :: (GLFWToken -> RIO env a) -> RIO env a
-withGLFW action = bracket
-  do liftIO GLFW.init
+withGLFW :: MonadUnliftIO m => ContT r m GLFWToken
+withGLFW = bracketCont
+  do liftIO $ ifM GLFW.init (pure UnsafeMkGLFWToken)
+                            (throwIO GLFWInitError)
   do const $ liftIO GLFW.terminate
-  \success -> if | success   -> action UnsafeMkGLFWToken
-                 | otherwise -> throwIO GLFWInitError
 
-withWindow :: (MonadIO m, MonadUnliftIO m, MonadReader env m, HasWindowSize env)
-           => GLFWToken -> (GLFW.Window -> m a) -> m a
-withWindow _ action = do
+withWindow :: (MonadUnliftIO m, MonadReader env m, HasWindowSize env)
+           => GLFWToken -> ContT r m GLFW.Window
+withWindow !_ = do
   width <- views windowWidthL fromIntegral
   height <- views windowHeightL fromIntegral
-  bracket
+  bracketCont
     do liftIO do
          mapM_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
                                    , GLFW.WindowHint'Resizable False
                                    ]
          progName <- getProgName
-         GLFW.createWindow width height progName Nothing Nothing
-    do liftIO . mapM_ GLFW.destroyWindow
-    do maybe (throwIO GLFWWindowError) action
+         fromMaybeM (throwIO GLFWWindowError) $
+           GLFW.createWindow width height progName Nothing Nothing
+    do liftIO . GLFW.destroyWindow
 
-withWindowSurface :: Instance -> GLFW.Window -> (SurfaceKHR -> RIO env a) -> RIO env a
-withWindowSurface inst window = bracket
+withWindowSurface :: MonadUnliftIO m => Instance -> GLFW.Window -> ContT r m SurfaceKHR
+withWindowSurface inst window = bracketCont
   do liftIO do surfacePtr <- malloc @SurfaceKHR
                result <- GLFW.createWindowSurface (instanceHandle inst) window nullPtr surfacePtr
                peek =<< catchVk (pure (coerce @Int32 result, surfacePtr))
   do destroySurfaceKHR inst ?? Nothing
 
 mainLoop :: HasVulkanApp env => RIO env ()
-mainLoop = whileM do
-  liftIO GLFW.waitEvents -- XXX might need pollEvents instead
-  liftIO . fmap not . GLFW.windowShouldClose =<< view windowL
+mainLoop = do
+  logDebug "Starting main loop."
+  whileM do
+    liftIO GLFW.waitEvents -- XXX might need pollEvents instead
+    liftIO . fmap not . GLFW.windowShouldClose =<< view windowL
 
 validationLayers :: (MonadIO m, MonadReader env m, HasEnableValidationLayers env)
                  => m (Vector ByteString)
@@ -339,11 +341,10 @@ catchVk = (=<<) \case
   (SUCCESS, x) -> pure x
   (err    , _) -> throwIO $ VkGenericError err
 
-runApp :: HasApp env => RIO env ()
-runApp = evalContT do
-  logDebug "Started boxticle."
-
-  glfwToken <- ContT withGLFW
+acquireGraphicsResources :: (MonadUnliftIO m, MonadReader env m, HasApp env)
+                         => ContT r m GraphicsResources
+acquireGraphicsResources = do
+  glfwToken <- withGLFW
   logDebug "Initialized GLFW."
 
   unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
@@ -357,11 +358,11 @@ runApp = evalContT do
   let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
       instanceCreateInfo = zero{applicationInfo, enabledExtensionNames, enabledLayerNames}
 
-  inst <- ContT $ withInstance instanceCreateInfo Nothing bracket
-  window <- ContT $ withWindow glfwToken
+  inst <- withInstance instanceCreateInfo Nothing bracketCont
+  window <- withWindow glfwToken
   logDebug "Created window."
 
-  surface <- ContT $ withWindowSurface inst window
+  surface <- withWindowSurface inst window
   logDebug "Created surface."
 
   (physDev, swapchainSupportDetails, queueFamilyIndices@(MkQueueFamilyIndices{..})) <-
@@ -374,7 +375,7 @@ runApp = evalContT do
                              , enabledLayerNames
                              , enabledExtensionNames = deviceExtensions
                              }
-  device <- ContT $ withDevice physDev deviceCreateInfo Nothing bracket
+  device <- withDevice physDev deviceCreateInfo Nothing bracketCont
   logDebug "Created logical device."
 
   queues <- uncurry MkQueues <$>
@@ -383,14 +384,19 @@ runApp = evalContT do
 
   scInfo@(SwapchainCreateInfoKHR {imageFormat, imageColorSpace, imageExtent = swapchainExtent}) <-
     swapchainCreateInfo window surface swapchainSupportDetails queueFamilyIndices
-  swapchain <- ContT $ withSwapchainKHR device scInfo Nothing bracket
+  swapchain <- withSwapchainKHR device scInfo Nothing bracketCont
   logDebug "Created swapchain."
 
   swapchainImages <- catchVk $ getSwapchainImagesKHR device swapchain
   let swapchainFormat  = SurfaceFormatKHR imageFormat imageColorSpace
       swapchainDetails = MkSwapchainDetails{..}
 
-  lift $ mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) do logDebug "Starting main loop."
-                                                               mainLoop
+  pure $ MkGraphicsResources{..}
 
-  logInfo "Goodbye!"
+
+runApp :: HasApp env => RIO env ()
+runApp = evalContT do
+  logDebug "Started boxticle."
+
+  graphicsResources <- acquireGraphicsResources
+  lift $ mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) mainLoop
