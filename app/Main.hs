@@ -108,12 +108,19 @@ data Queues = MkQueues { graphicsQueue :: Queue
                        }
 makeRioClassy ''Queues
 
-data VulkanApp = MkVulkanApp { app                     :: App
-                             , window                  :: GLFW.Window
-                             , inst                    :: Instance
-                             , device                  :: Device
-                             , queues                  :: Queues
-                             , surface                 :: SurfaceKHR
+data SwapchainDetails = MkSwapchainDetails { swapchainFormat :: SurfaceFormatKHR
+                                           , swapchainExtent :: Extent2D
+                                           , swapchainImages :: Vector Image
+                                           }
+makeRioClassy ''SwapchainDetails
+
+data VulkanApp = MkVulkanApp { app              :: App
+                             , window           :: GLFW.Window
+                             , inst             :: Instance
+                             , device           :: Device
+                             , queues           :: Queues
+                             , surface          :: SurfaceKHR
+                             , swapchainDetails :: SwapchainDetails
                              }
 makeRioClassy ''VulkanApp
 
@@ -121,9 +128,9 @@ data QueueFamilyIndices = MkQueueFamilyIndices { graphicsQueueFamily :: Word32
                                                , presentQueueFamily  :: Word32
                                                }
 
-data SwapChainSupportDetails = MkSwapChainSupportDetails { swapChainCapabilities :: SurfaceCapabilitiesKHR
-                                                         , swapChainFormats      :: NonEmpty SurfaceFormatKHR
-                                                         , swapChainPresentModes :: NonEmpty PresentModeKHR
+data SwapchainSupportDetails = MkSwapchainSupportDetails { swapchainCapabilities :: SurfaceCapabilitiesKHR
+                                                         , swapchainFormats      :: NonEmpty SurfaceFormatKHR
+                                                         , swapchainPresentModes :: NonEmpty PresentModeKHR
                                                          }
 
 mkConfig :: Options -> Config
@@ -211,7 +218,7 @@ validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure
 
 pickPhysicalDevice :: (MonadIO m, MonadReader env m, HasLogFunc env)
                    => Instance -> SurfaceKHR
-                   -> m (PhysicalDevice, SwapChainSupportDetails, QueueFamilyIndices)
+                   -> m (PhysicalDevice, SwapchainSupportDetails, QueueFamilyIndices)
 pickPhysicalDevice inst surface = do
   catchVk (enumeratePhysicalDevices inst) >>= do
     toList >>> NE.nonEmpty >>> maybe
@@ -225,7 +232,7 @@ pickPhysicalDevice inst surface = do
         logDebug $ "Found " <> display les <> plural " physical device" les <>
           " supporting the extensions " <> displayShow deviceExtensions <> "."
 
-        scCandidates <- mapMaybeM (fmap sequence . traverseToSnd querySwapChainSupport) extCandidates
+        scCandidates <- mapMaybeM (fmap sequence . traverseToSnd querySwapchainSupport) extCandidates
         let lss = length scCandidates
         logDebug $ "Found " <> display lss <> plural " physical device" lss <>
           " with sufficient swap chain support."
@@ -263,14 +270,14 @@ pickPhysicalDevice inst surface = do
       exts <- fmap extensionName <$> catchVk (enumerateDeviceExtensionProperties physDev Nothing)
       pure $ V.all (`elem` exts) deviceExtensions
 
-    querySwapChainSupport :: MonadIO m => PhysicalDevice -> m (Maybe SwapChainSupportDetails)
-    querySwapChainSupport physDev = runMaybeT do
+    querySwapchainSupport :: MonadIO m => PhysicalDevice -> m (Maybe SwapchainSupportDetails)
+    querySwapchainSupport physDev = runMaybeT do
       let formats      = getPhysicalDeviceSurfaceFormatsKHR physDev surface
           presentModes = getPhysicalDeviceSurfacePresentModesKHR physDev surface
-      swapChainCapabilities      <- getPhysicalDeviceSurfaceCapabilitiesKHR physDev surface
-      Just swapChainFormats      <- NE.nonEmpty . toList <$> catchVk formats
-      Just swapChainPresentModes <- NE.nonEmpty . toList <$> catchVk presentModes
-      pure $ MkSwapChainSupportDetails{..}
+      swapchainCapabilities      <- getPhysicalDeviceSurfaceCapabilitiesKHR physDev surface
+      Just swapchainFormats      <- NE.nonEmpty . toList <$> catchVk formats
+      Just swapchainPresentModes <- NE.nonEmpty . toList <$> catchVk presentModes
+      pure $ MkSwapchainSupportDetails{..}
 
 deviceExtensions :: Vector ByteString
 deviceExtensions =
@@ -278,12 +285,12 @@ deviceExtensions =
 
   ]
 
-swapChainCreateInfo :: MonadIO m
-                    => GLFW.Window -> SurfaceKHR -> SwapChainSupportDetails -> QueueFamilyIndices
+swapchainCreateInfo :: MonadIO m
+                    => GLFW.Window -> SurfaceKHR -> SwapchainSupportDetails -> QueueFamilyIndices
                     -> m (SwapchainCreateInfoKHR '[])
-swapChainCreateInfo window
+swapchainCreateInfo window
                     surface
-                    (MkSwapChainSupportDetails capabilities formats _)
+                    (MkSwapchainSupportDetails capabilities formats _)
                     (MkQueueFamilyIndices{graphicsQueueFamily, presentQueueFamily}) = do
   imageExtent <- liftIO extent
   pure zero{ surface
@@ -357,7 +364,7 @@ runApp = evalContT do
   surface <- ContT $ withWindowSurface inst window
   logDebug "Created surface."
 
-  (physDev, swapChainSupportDetails, queueFamilyIndices@(MkQueueFamilyIndices{..})) <-
+  (physDev, swapchainSupportDetails, queueFamilyIndices@(MkQueueFamilyIndices{..})) <-
     pickPhysicalDevice inst surface
   logDebug "Picked device."
 
@@ -374,9 +381,14 @@ runApp = evalContT do
     join bitraverse (getDeviceQueue device ?? 0) (graphicsQueueFamily, presentQueueFamily)
   logDebug "Obtained device queues."
 
-  scInfo <- swapChainCreateInfo window surface swapChainSupportDetails queueFamilyIndices
+  scInfo@(SwapchainCreateInfoKHR {imageFormat, imageColorSpace, imageExtent = swapchainExtent}) <-
+    swapchainCreateInfo window surface swapchainSupportDetails queueFamilyIndices
   swapchain <- ContT $ withSwapchainKHR device scInfo Nothing bracket
   logDebug "Created swapchain."
+
+  swapchainImages <- catchVk $ getSwapchainImagesKHR device swapchain
+  let swapchainFormat  = SurfaceFormatKHR imageFormat imageColorSpace
+      swapchainDetails = MkSwapchainDetails{..}
 
   lift $ mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) do logDebug "Starting main loop."
                                                                mainLoop
