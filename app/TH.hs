@@ -6,10 +6,17 @@ import RIO
 import RIO.Char qualified as C
 import RIO.Lens
 import Language.Haskell.TH
+import Control.Lens.TH (makeLensesWith, classyRules_, DefName (TopName), lensField, lensClass)
 
 type Field = VarBangType
 
 {-# ANN makeRioClassy ("HLint: ignore Redundant bracket" :: String) #-}
+
+makeRegularClassy :: Name -> DecsQ
+makeRegularClassy = makeLensesWith $
+  classyRules_ & lensField .~ (\_ _ n -> [TopName . mkName . lensSuffix $ nameBase n])
+               & lensClass .~ (\(nameBase -> n) -> Just ( mkName (classPrefix n)
+                                                        , mkName $ '_':lensSuffix n))
 
 makeRioClassy :: Name -> DecsQ
 makeRioClassy tyConName = do
@@ -61,12 +68,6 @@ makeRioClassy tyConName = do
 
     thisClassName :: Name
     thisClassName = mapName classPrefix tyConName
-
-    classPrefix :: String -> String
-    classPrefix = ("Has" <>)
-
-    lensSuffix :: String -> String
-    lensSuffix = (<> "L")
 
     fieldLens :: Field -> Name
     fieldLens (fieldName, _, _) = mapName lensSuffix fieldName
@@ -131,3 +132,9 @@ makeRioClassy tyConName = do
         mkSuperImpl (SigD methName _) =
           [d| $(varP methName) = $(varE $ fieldLens field) . $(varE methName) |]
         mkSuperImpl _ = pure []
+
+lensSuffix :: String -> String
+lensSuffix = (<> "L")
+
+classPrefix :: String -> String
+classPrefix = ("Has" <>)

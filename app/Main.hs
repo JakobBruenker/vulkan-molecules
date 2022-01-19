@@ -8,7 +8,7 @@ import RIO.NonEmpty qualified as NE
 import RIO.Vector qualified as V
 import Data.List.NonEmpty.Extra qualified as NE
 
-import Control.Lens (views, (??), _1, both, ix)
+import Control.Lens (views, (??), _1, ix)
 import Control.Monad.Extra (fromMaybeM, ifM, whenJust)
 import Data.Bits (Bits((.&.)))
 import Options.Applicative
@@ -27,6 +27,16 @@ import Options.Applicative
       Parser )
 import Options.Applicative qualified as Opt
 import System.Environment (getProgName)
+import Control.Applicative (ZipList(..))
+import Control.Monad.Trans.Cont (evalContT, ContT(..))
+import Control.Monad.Trans.Maybe (runMaybeT)
+import Control.Monad.Trans.Resource (allocate, ReleaseKey, MonadResource, runResourceT)
+import Data.Coerce (coerce)
+import Data.Finite (Finite, natToFinite, modulo)
+import Data.Foldable (find)
+import Data.List (nub)
+import Data.Tuple.Extra (dupe)
+import Foreign (malloc, nullPtr, Storable (peek))
 
 import Data.Vector.Sized qualified as Sized
 
@@ -40,21 +50,12 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
-import Utils (traverseToSnd, plural, clamp)
-import Foreign (malloc, nullPtr, Storable (peek))
-import Data.Coerce (coerce)
-import Data.Foldable (find)
-import Control.Applicative (ZipList(..))
-import Data.List (nub)
-import Control.Monad.Trans.Maybe (runMaybeT)
-import Control.Monad.Trans.Cont (evalContT, ContT(..))
+import Internal.Types(GLFWToken(UnsafeMkGLFWToken))
 
-import Shaders (compileAllShaders)
+import Utils
+import Shaders
 import Types
-import Pipeline (withGraphicsPipeline)
-import Data.Tuple.Extra (dupe)
-import Data.Finite (Finite, natToFinite, modulo)
-import Control.Monad.Trans.Resource (allocate, ReleaseKey, MonadResource, runResourceT)
+import Swapchain
 
 mkConfig :: Options -> Config
 mkConfig (MkOptions w h n f m _ l) = MkConfig (MkWindowSize w h) n f m l
@@ -126,17 +127,14 @@ withWindow !_ = do
         (_, _, w, h) <- GLFW.getMonitorWorkarea mon
         pure (w, h)
     | otherwise -> join bitraverse (views ?? fromIntegral) (windowWidthL, windowHeightL)
-  logWarn $ "using " <> displayShow width <> ", " <> displayShow height
-  allocate
-    do
-      mapM_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
-                                , GLFW.WindowHint'Decorated False
-                                , GLFW.WindowHint'Resizable False
-                                ]
-      progName <- getProgName
-      fromMaybeM (throwIO GLFWWindowError) $
-        GLFW.createWindow width height progName monitor Nothing
-    do GLFW.destroyWindow
+  allocate do mapM_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
+                                        , GLFW.WindowHint'Decorated False
+                                        , GLFW.WindowHint'Resizable False
+                                        ]
+              progName <- getProgName
+              fromMaybeM (throwIO GLFWWindowError) $
+                GLFW.createWindow width height progName monitor Nothing
+           do GLFW.destroyWindow
 
 withWindowSurface :: MonadResource m => Instance -> GLFW.Window -> m (ReleaseKey, SurfaceKHR)
 withWindowSurface inst window = allocate
@@ -150,10 +148,10 @@ withWindowSurface inst window = allocate
       (SUCCESS, x) -> pure x
       (err    , _) -> throwIO $ VkGenericError err
 
-drawFrame :: HasVulkanApp env => Finite MaxFramesInFlight -> RIO env ()
+drawFrame :: HasBoxticle env => Finite MaxFramesInFlight -> RIO env ()
 drawFrame currentFrame = do
   device <- view deviceL
-  swapchain <- view swapchainL
+  swapchain <- viewRes swapchainL
   imageAvailable <- view imageAvailableL
   renderFinished <- view renderFinishedL
   inFlight <- view inFlightL
@@ -168,7 +166,7 @@ drawFrame currentFrame = do
   (_, imageIndex) <-
     acquireNextImageKHR device swapchain maxBound (ixSync imageAvailable) NULL_HANDLE
 
-  MkBufferCollection{commandBuffer, imageInFlight} <- fromMaybeM
+  MkImageRelated{commandBuffer, imageInFlight} <- fromMaybeM
     do throwIO VkCommandBufferIndexOutOfRange
     do preview $ buffersL.ix (fromIntegral imageIndex)
 
@@ -199,7 +197,7 @@ drawFrame currentFrame = do
                                   }
   void $ queuePresentKHR presentQueue presentInfo
 
-mainLoop :: HasVulkanApp env => RIO env ()
+mainLoop :: HasBoxticle env => RIO env ()
 mainLoop = do
   logDebug "Starting main loop."
   fix ?? natToFinite (Proxy @0) $ \loop currentFrame -> do
@@ -224,7 +222,7 @@ validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure
 
 pickPhysicalDevice :: (MonadIO m, MonadReader env m, HasLogFunc env)
                    => Instance -> SurfaceKHR
-                   -> m (PhysicalDevice, SwapchainSupportDetails, QueueFamilyIndices)
+                   -> m (PhysicalDevice, SwapchainSupport, QueueFamilyIndices)
 pickPhysicalDevice inst surface = do
   enumeratePhysicalDevices inst >>= (snd >>> do
     toList >>> NE.nonEmpty >>> maybe
@@ -276,84 +274,31 @@ pickPhysicalDevice inst surface = do
       exts <- fmap extensionName . snd <$> enumerateDeviceExtensionProperties physDev Nothing
       pure $ V.all (`elem` exts) deviceExtensions
 
-    querySwapchainSupport :: MonadIO m => PhysicalDevice -> m (Maybe SwapchainSupportDetails)
+    querySwapchainSupport :: MonadIO m => PhysicalDevice -> m (Maybe SwapchainSupport)
     querySwapchainSupport physDev = runMaybeT do
       let formats      = getPhysicalDeviceSurfaceFormatsKHR physDev surface
           presentModes = getPhysicalDeviceSurfacePresentModesKHR physDev surface
       swapchainCapabilities      <- getPhysicalDeviceSurfaceCapabilitiesKHR physDev surface
       Just swapchainFormats      <- NE.nonEmpty . toList . snd <$> formats
       Just swapchainPresentModes <- NE.nonEmpty . toList . snd <$> presentModes
-      pure $ MkSwapchainSupportDetails{..}
+      pure $ MkSwapchainSupport{..}
 
 deviceExtensions :: Vector ByteString
 deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
   ]
 
-swapchainCreateInfo :: (MonadIO m, MonadReader env m, HasLogFunc env)
-                    => GLFW.Window -> SurfaceKHR -> SwapchainSupportDetails -> QueueFamilyIndices
-                    -> m (SwapchainCreateInfoKHR '[])
-swapchainCreateInfo window
-                    surface
-                    (MkSwapchainSupportDetails capabilities formats presentModes)
-                    (MkQueueFamilyIndices{graphicsQueueFamily, presentQueueFamily}) = do
-  imageExtent <- liftIO extent
-
-  logDebug $ "Using " <> displayShow presentMode <> "."
-
-  pure zero{ surface
-           , minImageCount = imageCount
-           , imageFormat
-           , imageColorSpace
-           , imageExtent
-           , imageArrayLayers = 1
-           , imageUsage = IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-           , imageSharingMode
-           , queueFamilyIndices
-           , preTransform = currentTransform
-           , compositeAlpha = COMPOSITE_ALPHA_OPAQUE_BIT_KHR
-           , presentMode
-           , clipped = True
-           }
-  where
-    imageSharingMode | graphicsQueueFamily == presentQueueFamily = SHARING_MODE_EXCLUSIVE
-                     | otherwise                                 = SHARING_MODE_CONCURRENT
-    queueFamilyIndices = V.fromList $ nub [graphicsQueueFamily, presentQueueFamily]
-    imageCount = clamp (minImageCount, bool maxBound maxImageCount $ maxImageCount > 0) desired
-      where desired = minImageCount + 1
-    SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} = liftA2 fromMaybe NE.head
-            (find (== SurfaceFormatKHR FORMAT_R8G8B8A8_SRGB COLOR_SPACE_SRGB_NONLINEAR_KHR))
-            formats
-    extent | currentWidth /= maxBound = pure currentExtent
-           | otherwise = do
-             (fbWidth, fbHeight) <- over both fromIntegral <$> GLFW.getFramebufferSize window
-             let width = clamp (minWidth, maxWidth) fbWidth
-                 height = clamp (minHeight, maxHeight) fbHeight
-             pure Extent2D{width, height}
-      where Extent2D{width = currentWidth} = currentExtent
-            Extent2D{width = minWidth, height = minHeight} = minImageExtent
-            Extent2D{width = maxWidth, height = maxHeight} = maxImageExtent
-    presentModesByPriority = [ PRESENT_MODE_MAILBOX_KHR
-                             , PRESENT_MODE_IMMEDIATE_KHR
-                             , PRESENT_MODE_FIFO_RELAXED_KHR
-                             , PRESENT_MODE_FIFO_KHR
-                             ] :: [PresentModeKHR]
-    presentMode = fromMaybe (NE.head presentModes) $ find (`elem` presentModes) presentModesByPriority
-
-    SurfaceCapabilitiesKHR{ currentExtent, currentTransform
-                          , minImageExtent, maxImageExtent
-                          , minImageCount, maxImageCount
-                          } = capabilities
-
-withImageFences :: MonadResource m => Vector Image -> m (Vector (Image, IORef (Maybe Fence)))
+withImageFences :: MonadResource m => Vector image -> m (Vector (image, IORef (Maybe Fence)))
 withImageFences = traverse \image -> (image,) <$> newIORef Nothing
 
 withImageViews :: MonadResource m
-               => Device -> Format -> Vector (Image, fence)
-               -> m (Vector (Image, fence, ImageView))
+               => Device -> Format -> Vector (IORef Image, fence)
+               -> m (Vector (IORef Image, fence, MResource ImageView))
 withImageViews device format =
-  traverse \(image, fence) ->
-    (image, fence,) . snd <$> withImageView device ivInfo{image} Nothing allocate
+  traverse \(imageRef, fence) -> do
+    image <- readIORef imageRef
+    imageView <- mkMResource =<< withImageView device ivInfo{image} Nothing allocate
+    pure (imageRef, fence, imageView)
   where
     ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
                  , format
@@ -365,28 +310,27 @@ withImageViews device format =
                            }
 
 withFramebuffers :: MonadResource m
-                 => GraphicsResources -> PipelineDetails -> Vector (Image, fence, ImageView)
-                 -> m (Vector (Image, fence, ImageView, Framebuffer))
-withFramebuffers graphicsResources MkPipelineDetails{renderPass} = traverse
-  \(image, fence, imageView) -> (image, fence, imageView,) . snd <$>
-    withFramebuffer device fbInfo{attachments = [imageView]} Nothing allocate
-  where
-    device = graphicsResources^.deviceL
-    Extent2D{width, height} = graphicsResources^.swapchainExtentL
+                 => Device -> Extent2D -> RenderPass -> Vector (image, fence, MResource ImageView)
+                 -> m (Vector (image, fence, MResource ImageView, MResource Framebuffer))
+withFramebuffers device Extent2D{width, height} renderPass images = do
+  let fbInfo = zero{ renderPass
+                   , width
+                   , height
+                   , layers = 1
+                   }
 
-    fbInfo = zero{ renderPass
-                 , width
-                 , height
-                 , layers = 1
-                 }
+  for images \(image, fence, imageViewRes) -> (image, fence, imageViewRes,) <$> do
+    imageView <- imageViewRes^->resourceL
+    mkMResource =<< withFramebuffer device fbInfo{attachments = [imageView]} Nothing allocate
 
-setupCommands :: HasVulkanApp env => RIO env ()
+setupCommands :: HasBoxticle env => RIO env ()
 setupCommands = do
-  view buffersL >>= traverse_ \MkBufferCollection{commandBuffer, framebuffer} ->
+  view buffersL >>= traverse_ \MkImageRelated{commandBuffer, framebuffer = framebufferRes} ->
     useCommandBuffer commandBuffer zero do
-      renderPass <- view renderPassL
-      extent <- view swapchainExtentL
-      graphicsPipeline <- view pipelineL
+      renderPass <- viewRes renderPassL
+      extent <- viewRef swapchainExtentL
+      graphicsPipeline <- viewRes graphicsPipelineL
+      framebuffer <- framebufferRes^->resourceL
       let renderPassInfo = zero{ renderPass
                                , framebuffer
                                , renderArea = zero{extent}
@@ -421,7 +365,7 @@ withGraphicsResources = do
   (_, surface) <- withWindowSurface inst window
   logDebug "Created surface."
 
-  (physDev, swapchainSupportDetails, queueFamilyIndices@(MkQueueFamilyIndices{..})) <-
+  (physDev, swapchainSupport, queueFamilyIndices@(MkQueueFamilyIndices{..})) <-
     pickPhysicalDevice inst surface
   logDebug "Picked device."
 
@@ -438,14 +382,6 @@ withGraphicsResources = do
     join bitraverse (getDeviceQueue device ?? 0) (graphicsQueueFamily, presentQueueFamily)
   logDebug "Obtained device queues."
 
-  scInfo@(SwapchainCreateInfoKHR {imageFormat, imageColorSpace, imageExtent = swapchainExtent}) <-
-    swapchainCreateInfo window surface swapchainSupportDetails queueFamilyIndices
-  (_, swapchain) <- withSwapchainKHR device scInfo Nothing allocate
-  logDebug "Created swapchain."
-
-  let swapchainFormat  = SurfaceFormatKHR imageFormat imageColorSpace
-      swapchainDetails = MkSwapchainDetails{..}
-
   pure $ MkGraphicsResources{..}
 
 runApp :: HasApp env => RIO env ()
@@ -457,31 +393,36 @@ runApp = runResourceT do
 
   graphicsResources <- withGraphicsResources
 
-  pipelineDetails <- withGraphicsPipeline graphicsResources
-  logDebug "Created pipeline."
+  app <- view appL
+  let graphicsApp = MkGraphicsApp{..}
+
+  swapchainRelated <- runReaderT withSwapchain graphicsApp
+  swapchain <- runReaderT (viewRes swapchainL) swapchainRelated
 
   let device = graphicsResources^.deviceL
-      swapchain = graphicsResources^.swapchainL
       commandPoolInfo = zero{ queueFamilyIndex = graphicsResources^.graphicsQueueFamilyL
                             } :: CommandPoolCreateInfo
   (_, commandPool) <- withCommandPool device commandPoolInfo Nothing allocate
   logDebug "Created command pool."
 
-  images <- snd <$> getSwapchainImagesKHR device swapchain
+  images <- traverse newIORef . snd =<< getSwapchainImagesKHR device swapchain
   imgWithFences <- withImageFences images
 
-  let SurfaceFormatKHR{format} = graphicsResources^.swapchainFormatL
+  let SurfaceFormatKHR{format} = swapchainRelated^.swapchainFormatL
   imgsWithViews <- withImageViews device format imgWithFences
 
-  ivsWithFbs <- withFramebuffers graphicsResources pipelineDetails imgsWithViews
+  swapchainExtent <- readIORef (swapchainRelated^.swapchainExtentL)
+  renderPass <- runReaderT (viewRes renderPassL) swapchainRelated
+  ivsWithFbs <- withFramebuffers device swapchainExtent renderPass imgsWithViews
 
   let commandBuffersInfo = zero{ commandPool
                                , level = COMMAND_BUFFER_LEVEL_PRIMARY
                                , commandBufferCount = fromIntegral $ length ivsWithFbs
                                }
   (_, commandBuffers) <- withCommandBuffers device commandBuffersInfo allocate
-  let buffers = V.zipWith (\(image, imageInFlight, imageView, framebuffer) commandBuffer -> MkBufferCollection{..})
-                          ivsWithFbs commandBuffers
+  buffers <- V.zipWithM
+        (\(image, imageInFlight, imageView, framebuffer) commandBuffer -> pure MkImageRelated{..})
+        ivsWithFbs commandBuffers
   logDebug "Created buffers."
 
   (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
@@ -491,6 +432,6 @@ runApp = runResourceT do
   let syncs = MkSyncs{..}
   logDebug "Created syncs."
 
-  lift . mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) $ setupCommands *> mainLoop
+  lift . mapRIO (const MkBoxticle{..}) $ setupCommands *> mainLoop
 
   logInfo "Goodbye!"

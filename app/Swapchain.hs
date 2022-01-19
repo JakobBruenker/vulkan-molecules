@@ -1,8 +1,19 @@
 {-# LANGUAGE OverloadedLists #-}
 
-module Pipeline where
+module Swapchain where
 
 import RIO
+import RIO.Vector qualified as V
+import RIO.NonEmpty qualified as NE
+
+import Control.Lens (both)
+import Data.Bits ((.|.))
+import Data.Foldable (find)
+import Data.List (nub)
+import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
+import Control.Monad.Trans.Resource (allocate, ReleaseKey, release)
+
+import Graphics.UI.GLFW qualified as GLFW
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , IOSSurfaceCreateInfoMVK(view)
@@ -13,27 +24,100 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 
 import Types
+import Utils
 import Shaders (vertPath, fragPath)
-import Data.Bits ((.|.))
-import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
-import Control.Monad.Trans.Resource (MonadResource, allocate, ReleaseKey, release)
 
-loadShader :: MonadResource m => Device -> FilePath -> m (ReleaseKey, ShaderModule)
-loadShader device path = do
+withSwapchain :: (MonadRR env m, HasLogFunc env, HasGraphicsResources env)
+              => m SwapchainRelated
+withSwapchain = do
+  device <- view deviceL
+  scInfo@(SwapchainCreateInfoKHR{imageExtent, imageFormat, imageColorSpace}) <- swapchainCreateInfo
+  swapchain <- mkMResource =<< withSwapchainKHR device scInfo Nothing allocate
+
+  let swapchainFormat = SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace}
+  swapchainExtent <- newIORef imageExtent
+
+  renderPass <- mkMResource =<< withGraphicsRenderPass imageFormat
+  graphicsPipelineLayout <- mkMResource =<< withGraphicsPipelineLayout
+  graphicsPipeline <- mkMResource =<< join do
+    liftA3 withGraphicsPipeline do renderPass^->resourceL
+                                do readIORef swapchainExtent
+                                do graphicsPipelineLayout^->resourceL
+
+  pure $ MkSwapchainRelated{..}
+
+swapchainCreateInfo :: (MonadRR env m, HasLogFunc env, HasGraphicsResources env)
+                    => m (SwapchainCreateInfoKHR '[])
+swapchainCreateInfo = do
+  surface <- view surfaceL
+  window <- view windowL
+  SurfaceCapabilitiesKHR{ currentExtent, currentTransform
+                        , minImageExtent, maxImageExtent
+                        , minImageCount, maxImageCount
+                        } <- view swapchainCapabilitiesL
+  SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} <- liftA2 fromMaybe NE.head
+    (find (== SurfaceFormatKHR FORMAT_R8G8B8A8_SRGB COLOR_SPACE_SRGB_NONLINEAR_KHR))
+    <$> view swapchainFormatsL
+  presentModes <- view swapchainPresentModesL
+  queueFamilyIndices <- V.fromList . nub <$> traverse view [graphicsQueueFamilyL, presentQueueFamilyL]
+
+  imageExtent <- do
+    let Extent2D{width = currentWidth} = currentExtent
+        Extent2D{width = minWidth, height = minHeight} = minImageExtent
+        Extent2D{width = maxWidth, height = maxHeight} = maxImageExtent
+    if | currentWidth /= maxBound -> pure currentExtent
+       | otherwise -> do
+           (fbWidth, fbHeight) <- over both fromIntegral <$> liftIO (GLFW.getFramebufferSize window)
+           let width = clamp (minWidth, maxWidth) fbWidth
+               height = clamp (minHeight, maxHeight) fbHeight
+           pure Extent2D{width, height}
+
+  let imageSharingMode | length queueFamilyIndices <= 1 = SHARING_MODE_EXCLUSIVE
+                       | otherwise                      = SHARING_MODE_CONCURRENT
+      imageCount = clamp (minImageCount, bool maxBound maxImageCount $ maxImageCount > 0) desired
+        where desired = minImageCount + 1
+      presentModesByPriority = [ PRESENT_MODE_MAILBOX_KHR
+                               , PRESENT_MODE_IMMEDIATE_KHR
+                               , PRESENT_MODE_FIFO_RELAXED_KHR
+                               , PRESENT_MODE_FIFO_KHR
+                               ] :: [PresentModeKHR]
+      presentMode = fromMaybe (NE.head presentModes) $ find (`elem` presentModes) presentModesByPriority
+
+  logDebug $ "Using " <> displayShow presentMode <> "."
+
+  pure zero{ surface
+           , minImageCount = imageCount
+           , imageFormat
+           , imageColorSpace
+           , imageExtent
+           , imageArrayLayers = 1
+           , imageUsage = IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+           , imageSharingMode
+           , queueFamilyIndices
+           , preTransform = currentTransform
+           , compositeAlpha = COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+           , presentMode
+           , clipped = True
+           }
+
+loadShader :: (MonadRR env m, HasDevice env) => FilePath -> m (ReleaseKey, ShaderModule)
+loadShader path = do
+  device <- view deviceL
   bytes <- readFileBinary path
   withShaderModule device zero{code = bytes} Nothing allocate
 
-withGraphicsPipelineLayout :: MonadResource m => Device -> m (ReleaseKey, PipelineLayout)
-withGraphicsPipelineLayout device = do
+withGraphicsPipelineLayout :: (MonadRR env m, HasDevice env) => m (ReleaseKey, PipelineLayout)
+withGraphicsPipelineLayout = do
+  device <- view deviceL
   let layoutInfo = zero
   withPipelineLayout device layoutInfo Nothing allocate
 
-withGraphicsPipeline :: MonadResource m => GraphicsResources -> m PipelineDetails
-withGraphicsPipeline graphicsResources = do
-  let extent@Extent2D{width, height} = graphicsResources^.swapchainExtentL
-      device = graphicsResources^.deviceL
-      vertexInputState = Just zero
-      inputAssemblyState = Just zero{ topology = PRIMITIVE_TOPOLOGY_POINT_LIST }
+withGraphicsPipeline :: (MonadRR env m, HasGraphicsResources env)
+                     => RenderPass -> Extent2D -> PipelineLayout -> m (ReleaseKey, Pipeline)
+withGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
+  device <- view deviceL
+  let vertexInputState = Just zero
+      inputAssemblyState = Just zero{topology = PRIMITIVE_TOPOLOGY_POINT_LIST}
       viewport = zero{ width = fromIntegral width
                      , height = fromIntegral height
                      , minDepth  =0
@@ -66,11 +150,9 @@ withGraphicsPipeline graphicsResources = do
       colorBlendState = Just $ SomeStruct zero{ logicOpEnable = False
                                               , attachments = [blendAttachment]
                                               }
-  (_, layout) <- withGraphicsPipelineLayout device
-  (_, renderPass) <- withGraphicsRenderPass graphicsResources
 
-  (releaseVert, vertModule) <- loadShader device vertPath
-  (releaseFrag, fragModule) <- loadShader device fragPath
+  (releaseVert, vertModule) <- loadShader vertPath
+  (releaseFrag, fragModule) <- loadShader fragPath
 
   let vertShaderStageInfo = zero{ stage = SHADER_STAGE_VERTEX_BIT
                                 , module' = vertModule
@@ -93,20 +175,21 @@ withGraphicsPipeline graphicsResources = do
                                            , subpass = 0
                                            }
 
-  (_, (_, pipelines)) <- withGraphicsPipelines device zero pipelineInfo Nothing allocate
+  (releasePipelines, (_, pipelines)) <-
+    withGraphicsPipelines device zero pipelineInfo Nothing allocate
 
   -- We don't need the shader modules anymore after creating the pipeline
   traverse_ @[] release [releaseVert, releaseFrag]
 
   case pipelines of
-    [pipeline]      -> pure $ MkPipelineDetails pipeline renderPass
+    [pipeline]      -> pure (releasePipelines, pipeline)
     (length -> num) -> throwIO $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
 
-withGraphicsRenderPass :: MonadResource m => GraphicsResources -> m (ReleaseKey, RenderPass)
-withGraphicsRenderPass graphicsResources = do
-  let SurfaceFormatKHR{format} = graphicsResources^.swapchainFormatL
-      device = graphicsResources^.deviceL
-      colorAttachment = zero{ format
+withGraphicsRenderPass :: (MonadRR env m, HasGraphicsResources env)
+                       => Format -> m (ReleaseKey, RenderPass)
+withGraphicsRenderPass format = do
+  device <- view deviceL
+  let colorAttachment = zero{ format
                             , samples = SAMPLE_COUNT_1_BIT
                             , loadOp = ATTACHMENT_LOAD_OP_CLEAR
                             , storeOp = ATTACHMENT_STORE_OP_STORE
