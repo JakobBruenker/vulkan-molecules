@@ -44,7 +44,11 @@ type FragmentDefs =
 fragment :: ShaderModule "main" FragmentShader FragmentDefs _
 fragment = shader do
   pointSize <- #pointSize
-  #color .= Vec4 (1 - pointSize / 50) 0 0 1
+  pCoord <- #gl_PointCoord
+  let col = Vec4 (1 - pointSize / 50) (pointSize / 50) 0.5 1
+
+  -- Limit alpha to a disk with darkened limb
+  #color .= set @(Index 3) (1 - squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1)) col
 
 shaderPipeline :: ShaderPipeline FilePath
 shaderPipeline = ShaderPipeline $ StructInput @VertexInput @Points

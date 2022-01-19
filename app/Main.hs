@@ -9,7 +9,7 @@ import RIO.Vector qualified as V
 import Data.List.NonEmpty.Extra qualified as NE
 
 import Control.Lens (views, (??), _1, both, ix)
-import Control.Monad.Extra (whileM, fromMaybeM, ifM)
+import Control.Monad.Extra (fromMaybeM, ifM, whenJust)
 import Data.Bits (Bits((.&.)))
 import Options.Applicative
     ( (<**>),
@@ -27,6 +27,8 @@ import Options.Applicative
       Parser )
 import Options.Applicative qualified as Opt
 import System.Environment (getProgName)
+
+import Data.Vector.Sized qualified as Sized
 
 import Graphics.UI.GLFW qualified as GLFW
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -51,6 +53,7 @@ import Shaders (compileAllShaders)
 import Types
 import Pipeline (withGraphicsPipeline)
 import Data.Tuple.Extra (dupe)
+import Data.Finite (Finite, natToFinite, modulo)
 
 mkConfig :: Options -> Config
 mkConfig (MkOptions w h _ l) = MkConfig (MkWindowSize w h) l
@@ -120,31 +123,49 @@ withWindowSurface inst window = bracketCont
       (SUCCESS, x) -> pure x
       (err    , _) -> throwIO $ VkGenericError err
 
-drawFrame :: HasVulkanApp env => RIO env ()
-drawFrame = do
+drawFrame :: HasVulkanApp env => Finite MaxFramesInFlight -> RIO env ()
+drawFrame currentFrame = do
   device <- view deviceL
   swapchain <- view swapchainL
   imageAvailable <- view imageAvailableL
   renderFinished <- view renderFinishedL
+  inFlight <- view inFlightL
   graphicsQueue <- view graphicsQueueL
   presentQueue <- view presentQueueL
 
-  imageIndex <- snd <$> acquireNextImageKHR device swapchain maxBound imageAvailable NULL_HANDLE
+  let ixSync :: Sized.Vector MaxFramesInFlight a -> a
+      ixSync = view $ Sized.ix currentFrame
 
-  MkBufferCollection{commandBuffer} <- fromMaybeM (throwIO VkCommandBufferIndexOutOfRange) $
-    preview $ buffersL.ix (fromIntegral imageIndex)
+  _result <- waitForFences device [ixSync inFlight] True maxBound
+
+  imageIndex <- snd <$>
+    acquireNextImageKHR device swapchain maxBound (ixSync imageAvailable) NULL_HANDLE
+
+  MkBufferCollection{commandBuffer, imageInFlight} <- fromMaybeM
+    do throwIO VkCommandBufferIndexOutOfRange
+    do preview $ buffersL.ix (fromIntegral imageIndex)
+
+  imageInFlightFence <- readIORef imageInFlight
+
+  -- Check if a previous frame is using this image (i.e. there is its fence to wait on)
+  whenJust imageInFlightFence \fence -> void $ waitForFences device [fence] True maxBound
+
+  -- Mark the image as now being in use by this frame
+  writeIORef imageInFlight (Just $ ixSync inFlight)
 
   let submitInfo = pure . SomeStruct $
         SubmitInfo{ next = ()
-                  , waitSemaphores = [imageAvailable]
+                  , waitSemaphores = [ixSync imageAvailable]
                   , waitDstStageMask = [PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT]
                   , commandBuffers = [commandBufferHandle commandBuffer]
-                  , signalSemaphores = [renderFinished]
+                  , signalSemaphores = [ixSync renderFinished]
                   }
-  queueSubmit graphicsQueue submitInfo NULL_HANDLE
+
+  resetFences device [ixSync inFlight]
+  queueSubmit graphicsQueue submitInfo (ixSync inFlight)
 
   let presentInfo = PresentInfoKHR{ next = ()
-                                  , waitSemaphores = [renderFinished]
+                                  , waitSemaphores = [ixSync renderFinished]
                                   , swapchains = [swapchain]
                                   , imageIndices = [imageIndex]
                                   , results = zero
@@ -154,10 +175,14 @@ drawFrame = do
 mainLoop :: HasVulkanApp env => RIO env ()
 mainLoop = do
   logDebug "Starting main loop."
-  drawFrame
-  whileM do
+  fix ?? natToFinite (Proxy @0) $ \loop currentFrame -> do
+    drawFrame currentFrame
     liftIO GLFW.waitEvents
-    liftIO . fmap not . GLFW.windowShouldClose =<< view windowL
+    let nextFrame = modulo @MaxFramesInFlight $ fromIntegral currentFrame + 1
+    unlessM ?? loop nextFrame $ liftIO . GLFW.windowShouldClose =<< view windowL
+
+  -- Allow queues/buffers to finish their job
+  deviceWaitIdleSafe =<< view deviceL
 
 validationLayers :: (MonadIO m, MonadReader env m, HasEnableValidationLayers env)
                  => m (Vector ByteString)
@@ -285,9 +310,14 @@ swapchainCreateInfo window
                           , minImageCount, maxImageCount
                           } = capabilities
 
-withImageViews :: MonadUnliftIO m => Device -> Format -> Vector Image -> ContT r m (Vector (Image, ImageView))
+withImageFences :: MonadUnliftIO m => Vector Image -> ContT r m (Vector (Image, IORef (Maybe Fence)))
+withImageFences = traverse \image -> (image,) <$> newIORef Nothing
+
+withImageViews :: MonadUnliftIO m
+               => Device -> Format -> Vector (Image, fence)
+               -> ContT r m (Vector (Image, fence, ImageView))
 withImageViews device format =
-  traverse \image -> (image,) <$> withImageView device ivInfo{image} Nothing bracketCont
+  traverse \(image, fence) -> (image, fence,) <$> withImageView device ivInfo{image} Nothing bracketCont
   where
     ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
                  , format
@@ -299,10 +329,11 @@ withImageViews device format =
                            }
 
 withFramebuffers :: MonadUnliftIO m
-                 => GraphicsResources -> PipelineDetails -> Vector (Image, ImageView)
-                 -> ContT r m (Vector (Image, ImageView, Framebuffer))
-withFramebuffers graphicsResources MkPipelineDetails{renderPass} = traverse \(image, imageView) ->
-  (image, imageView,) <$> withFramebuffer device fbInfo{attachments = [imageView]} Nothing bracketCont
+                 => GraphicsResources -> PipelineDetails -> Vector (Image, fence, ImageView)
+                 -> ContT r m (Vector (Image, fence, ImageView, Framebuffer))
+withFramebuffers graphicsResources MkPipelineDetails{renderPass} = traverse
+  \(image, fence, imageView) -> (image, fence, imageView,) <$>
+    withFramebuffer device fbInfo{attachments = [imageView]} Nothing bracketCont
   where
     device = graphicsResources^.deviceL
     Extent2D{width, height} = graphicsResources^.swapchainExtentL
@@ -323,7 +354,7 @@ setupCommands = do
       let renderPassInfo = zero{ renderPass
                                , framebuffer
                                , renderArea = zero{extent}
-                               , clearValues = [Color $ Float32 0 0 0.5 1]
+                               , clearValues = [Color $ Float32 0 0 0 1]
                                }
       cmdUseRenderPass commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
         cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
@@ -401,9 +432,10 @@ runApp = evalContT do
   logDebug "Created command pool."
 
   images <- snd <$> getSwapchainImagesKHR device swapchain
+  imgWithFences <- withImageFences images
 
   let SurfaceFormatKHR{format} = graphicsResources^.swapchainFormatL
-  imgsWithViews <- withImageViews device format images
+  imgsWithViews <- withImageViews device format imgWithFences
 
   ivsWithFbs <- withFramebuffers graphicsResources pipelineDetails imgsWithViews
 
@@ -412,12 +444,15 @@ runApp = evalContT do
                                , commandBufferCount = fromIntegral $ length ivsWithFbs
                                }
   commandBuffers <- withCommandBuffers device commandBuffersInfo bracketCont
-  let buffers = V.zipWith (\(image, imageView, framebuffer) commandBuffer -> MkBufferCollection{..})
+  let buffers = V.zipWith (\(image, imageInFlight, imageView, framebuffer) commandBuffer -> MkBufferCollection{..})
                           ivsWithFbs commandBuffers
   logDebug "Created buffers."
 
-  semaphores <- fmap (uncurry MkSemaphores) . bisequence . dupe $
+  (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
     withSemaphore device zero Nothing bracketCont
-  logDebug "Created semaphores."
+  inFlight <- Sized.replicateM $
+    withFence device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing bracketCont
+  let syncs = MkSyncs{..}
+  logDebug "Created syncs."
 
   lift . mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) $ setupCommands *> mainLoop

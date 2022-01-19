@@ -6,10 +6,14 @@ import RIO
 import RIO.ByteString qualified as B
 import RIO.Text qualified as T
 
+import Data.Vector.Sized qualified as Sized
+
 import Vulkan hiding (Display)
 
 import TH
 import Graphics.UI.GLFW qualified as GLFW
+
+type MaxFramesInFlight = 2
 
 data AppException
   = GLFWInitError
@@ -57,6 +61,7 @@ data Options = MkOptions { optWidth            :: Natural
 data GLFWToken = UnsafeMkGLFWToken
 
 data BufferCollection = MkBufferCollection { image         :: Image
+                                           , imageInFlight :: IORef (Maybe Fence)
                                            , imageView     :: ImageView
                                            , framebuffer   :: Framebuffer
                                            , commandBuffer :: CommandBuffer
@@ -108,17 +113,19 @@ data PipelineDetails = MkPipelineDetails { pipeline   :: Pipeline
                                          }
 makeRioClassy ''PipelineDetails
 
-data Semaphores = MkSemaphores { imageAvailable :: Semaphore
-                               , renderFinished :: Semaphore
-                               }
-makeRioClassy ''Semaphores
+type SyncVector = Sized.Vector MaxFramesInFlight
+data Syncs = MkSyncs { imageAvailable :: SyncVector Semaphore
+                     , renderFinished :: SyncVector Semaphore
+                     , inFlight       :: SyncVector Fence
+                     }
+makeRioClassy ''Syncs
 
 data VulkanApp = MkVulkanApp { app               :: App
                              , graphicsResources :: GraphicsResources
                              , pipelineDetails   :: PipelineDetails
                              , commandPool       :: CommandPool
                              , buffers           :: Vector BufferCollection
-                             , semaphores        :: Semaphores
+                             , syncs             :: Syncs
                              }
 makeRioClassy ''VulkanApp
 
