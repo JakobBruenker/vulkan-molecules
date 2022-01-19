@@ -20,6 +20,7 @@ data AppException
   | VkNoPhysicalDevicesError
   | VkNoSuitableDevicesError
   | VkWrongNumberOfGraphicsPipelines ("expected" ::: Natural) ("actual" ::: Natural)
+  | VkCommandBufferIndexOutOfRange
 
 instance Exception AppException
 
@@ -43,6 +44,8 @@ instance Display AppException where
     VkWrongNumberOfGraphicsPipelines expected actual ->
       "Wrong number of graphics pipelines was created: Expected " <>
       displayShow expected <> " but got " <> displayShow actual <> "."
+    VkCommandBufferIndexOutOfRange -> "Vulkan requested a command buffer with" <>
+      " a higher index than available."
 
 data Options = MkOptions { optWidth            :: Natural
                          , optHeight           :: Natural
@@ -53,7 +56,8 @@ data Options = MkOptions { optWidth            :: Natural
 -- To keep track of whether GLFW is initialized
 data GLFWToken = UnsafeMkGLFWToken
 
-data BufferCollection = MkBufferCollection { imageView     :: ImageView
+data BufferCollection = MkBufferCollection { image         :: Image
+                                           , imageView     :: ImageView
                                            , framebuffer   :: Framebuffer
                                            , commandBuffer :: CommandBuffer
                                            }
@@ -78,9 +82,9 @@ data Queues = MkQueues { graphicsQueue :: Queue
                        }
 makeRioClassy ''Queues
 
-data SwapchainDetails = MkSwapchainDetails { swapchainFormat     :: SurfaceFormatKHR
-                                           , swapchainExtent     :: Extent2D
-                                           , swapchainImages     :: Vector Image
+data SwapchainDetails = MkSwapchainDetails { swapchainFormat :: SurfaceFormatKHR
+                                           , swapchainExtent :: Extent2D
+                                           , swapchain       :: SwapchainKHR
                                            }
 makeRioClassy ''SwapchainDetails
 
@@ -104,11 +108,17 @@ data PipelineDetails = MkPipelineDetails { pipeline   :: Pipeline
                                          }
 makeRioClassy ''PipelineDetails
 
+data Semaphores = MkSemaphores { imageAvailable :: Semaphore
+                               , renderFinished :: Semaphore
+                               }
+makeRioClassy ''Semaphores
+
 data VulkanApp = MkVulkanApp { app               :: App
                              , graphicsResources :: GraphicsResources
                              , pipelineDetails   :: PipelineDetails
                              , commandPool       :: CommandPool
                              , buffers           :: Vector BufferCollection
+                             , semaphores        :: Semaphores
                              }
 makeRioClassy ''VulkanApp
 

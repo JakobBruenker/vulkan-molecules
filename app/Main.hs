@@ -8,7 +8,7 @@ import RIO.NonEmpty qualified as NE
 import RIO.Vector qualified as V
 import Data.List.NonEmpty.Extra qualified as NE
 
-import Control.Lens (views, (??), _1, both)
+import Control.Lens (views, (??), _1, both, ix)
 import Control.Monad.Extra (whileM, fromMaybeM, ifM)
 import Data.Bits (Bits((.&.)))
 import Options.Applicative
@@ -38,7 +38,7 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
-import Utils (traverseToSnd, plural, clamp, bracketCont, catchVk)
+import Utils (traverseToSnd, plural, clamp, bracketCont)
 import Foreign (malloc, nullPtr, Storable (peek))
 import Data.Coerce (coerce)
 import Data.Foldable (find)
@@ -50,6 +50,7 @@ import Control.Monad.Trans.Cont (evalContT, ContT(..))
 import Shaders (compileAllShaders)
 import Types
 import Pipeline (withGraphicsPipeline)
+import Data.Tuple.Extra (dupe)
 
 mkConfig :: Options -> Config
 mkConfig (MkOptions w h _ l) = MkConfig (MkWindowSize w h) l
@@ -111,20 +112,57 @@ withWindowSurface :: MonadUnliftIO m => Instance -> GLFW.Window -> ContT r m Sur
 withWindowSurface inst window = bracketCont
   do liftIO do surfacePtr <- malloc @SurfaceKHR
                result <- GLFW.createWindowSurface (instanceHandle inst) window nullPtr surfacePtr
-               peek =<< catchVk (pure (coerce @Int32 result, surfacePtr))
+               peek =<< catchVk (coerce @Int32 result, surfacePtr)
   do destroySurfaceKHR inst ?? Nothing
+  where
+    catchVk :: MonadIO m => (Result, a) -> m a
+    catchVk = \case
+      (SUCCESS, x) -> pure x
+      (err    , _) -> throwIO $ VkGenericError err
+
+drawFrame :: HasVulkanApp env => RIO env ()
+drawFrame = do
+  device <- view deviceL
+  swapchain <- view swapchainL
+  imageAvailable <- view imageAvailableL
+  renderFinished <- view renderFinishedL
+  graphicsQueue <- view graphicsQueueL
+  presentQueue <- view presentQueueL
+
+  imageIndex <- snd <$> acquireNextImageKHR device swapchain maxBound imageAvailable NULL_HANDLE
+
+  MkBufferCollection{commandBuffer} <- fromMaybeM (throwIO VkCommandBufferIndexOutOfRange) $
+    preview $ buffersL.ix (fromIntegral imageIndex)
+
+  let submitInfo = pure . SomeStruct $
+        SubmitInfo{ next = ()
+                  , waitSemaphores = [imageAvailable]
+                  , waitDstStageMask = [PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT]
+                  , commandBuffers = [commandBufferHandle commandBuffer]
+                  , signalSemaphores = [renderFinished]
+                  }
+  queueSubmit graphicsQueue submitInfo NULL_HANDLE
+
+  let presentInfo = PresentInfoKHR{ next = ()
+                                  , waitSemaphores = [renderFinished]
+                                  , swapchains = [swapchain]
+                                  , imageIndices = [imageIndex]
+                                  , results = zero
+                                  }
+  void $ queuePresentKHR presentQueue presentInfo
 
 mainLoop :: HasVulkanApp env => RIO env ()
 mainLoop = do
   logDebug "Starting main loop."
+  drawFrame
   whileM do
-    liftIO GLFW.waitEvents -- XXX might need pollEvents instead
+    liftIO GLFW.waitEvents
     liftIO . fmap not . GLFW.windowShouldClose =<< view windowL
 
 validationLayers :: (MonadIO m, MonadReader env m, HasEnableValidationLayers env)
                  => m (Vector ByteString)
 validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure []) do
-   properties <- catchVk enumerateInstanceLayerProperties
+   properties <- snd <$> enumerateInstanceLayerProperties
    case NE.nonEmpty $ filter (not . (properties `hasLayer`)) layers of
      Nothing          -> pure layers
      Just unsupported -> throwIO $ VkValidationLayersNotSupported unsupported
@@ -136,7 +174,7 @@ pickPhysicalDevice :: (MonadIO m, MonadReader env m, HasLogFunc env)
                    => Instance -> SurfaceKHR
                    -> m (PhysicalDevice, SwapchainSupportDetails, QueueFamilyIndices)
 pickPhysicalDevice inst surface = do
-  catchVk (enumeratePhysicalDevices inst) >>= do
+  enumeratePhysicalDevices inst >>= (snd >>> do
     toList >>> NE.nonEmpty >>> maybe
       do throwIO VkNoPhysicalDevicesError
       \physDevs -> do
@@ -157,7 +195,7 @@ pickPhysicalDevice inst surface = do
           Just qf <- findQueueFamilies d
           pure (d, sc, qf)) <&> NE.nonEmpty >>= maybe
             do throwIO VkNoSuitableDevicesError
-            do (fst . NE.maximumOn1 snd <$>) . mapM (traverseToSnd $ score . view _1)
+            do (fst . NE.maximumOn1 snd <$>) . mapM (traverseToSnd $ score . view _1))
   where
     score :: MonadIO m => PhysicalDevice -> m Integer
     score = (bool 1000 0 . (PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType <$>) .
@@ -183,7 +221,7 @@ pickPhysicalDevice inst surface = do
 
     checkDeviceExtensionSupport :: MonadIO m => PhysicalDevice -> m Bool
     checkDeviceExtensionSupport physDev = do
-      exts <- fmap extensionName <$> catchVk (enumerateDeviceExtensionProperties physDev Nothing)
+      exts <- fmap extensionName . snd <$> enumerateDeviceExtensionProperties physDev Nothing
       pure $ V.all (`elem` exts) deviceExtensions
 
     querySwapchainSupport :: MonadIO m => PhysicalDevice -> m (Maybe SwapchainSupportDetails)
@@ -191,8 +229,8 @@ pickPhysicalDevice inst surface = do
       let formats      = getPhysicalDeviceSurfaceFormatsKHR physDev surface
           presentModes = getPhysicalDeviceSurfacePresentModesKHR physDev surface
       swapchainCapabilities      <- getPhysicalDeviceSurfaceCapabilitiesKHR physDev surface
-      Just swapchainFormats      <- NE.nonEmpty . toList <$> catchVk formats
-      Just swapchainPresentModes <- NE.nonEmpty . toList <$> catchVk presentModes
+      Just swapchainFormats      <- NE.nonEmpty . toList . snd <$> formats
+      Just swapchainPresentModes <- NE.nonEmpty . toList . snd <$> presentModes
       pure $ MkSwapchainSupportDetails{..}
 
 deviceExtensions :: Vector ByteString
@@ -247,9 +285,9 @@ swapchainCreateInfo window
                           , minImageCount, maxImageCount
                           } = capabilities
 
-withImageViews :: MonadUnliftIO m => Device -> Format -> Vector Image -> ContT r m (Vector ImageView)
+withImageViews :: MonadUnliftIO m => Device -> Format -> Vector Image -> ContT r m (Vector (Image, ImageView))
 withImageViews device format =
-  traverse \image -> withImageView device ivInfo{image} Nothing bracketCont
+  traverse \image -> (image,) <$> withImageView device ivInfo{image} Nothing bracketCont
   where
     ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
                  , format
@@ -261,10 +299,10 @@ withImageViews device format =
                            }
 
 withFramebuffers :: MonadUnliftIO m
-                 => GraphicsResources -> PipelineDetails -> Vector ImageView
-                 -> ContT r m (Vector (ImageView, Framebuffer))
-withFramebuffers graphicsResources MkPipelineDetails{renderPass} = traverse \imageView ->
-  (imageView,) <$> withFramebuffer device fbInfo{attachments = [imageView]} Nothing bracketCont
+                 => GraphicsResources -> PipelineDetails -> Vector (Image, ImageView)
+                 -> ContT r m (Vector (Image, ImageView, Framebuffer))
+withFramebuffers graphicsResources MkPipelineDetails{renderPass} = traverse \(image, imageView) ->
+  (image, imageView,) <$> withFramebuffer device fbInfo{attachments = [imageView]} Nothing bracketCont
   where
     device = graphicsResources^.deviceL
     Extent2D{width, height} = graphicsResources^.swapchainExtentL
@@ -276,7 +314,7 @@ withFramebuffers graphicsResources MkPipelineDetails{renderPass} = traverse \ima
                  }
 
 setupCommands :: HasVulkanApp env => RIO env ()
-setupCommands =
+setupCommands = do
   view buffersL >>= traverse_ \MkBufferCollection{commandBuffer, framebuffer} ->
     useCommandBuffer commandBuffer zero do
       renderPass <- view renderPassL
@@ -290,6 +328,7 @@ setupCommands =
       cmdUseRenderPass commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
         cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
         cmdDraw commandBuffer 3 1 0 0
+  logDebug "Set up commands."
 
 withGraphicsResources :: (MonadUnliftIO m, MonadReader env m, HasApp env)
                          => ContT r m GraphicsResources
@@ -337,7 +376,6 @@ withGraphicsResources = do
   swapchain <- withSwapchainKHR device scInfo Nothing bracketCont
   logDebug "Created swapchain."
 
-  swapchainImages <- catchVk $ getSwapchainImagesKHR device swapchain
   let swapchainFormat  = SurfaceFormatKHR imageFormat imageColorSpace
       swapchainDetails = MkSwapchainDetails{..}
 
@@ -356,24 +394,30 @@ runApp = evalContT do
   logDebug "Created pipeline."
 
   let device = graphicsResources^.deviceL
+      swapchain = graphicsResources^.swapchainL
       commandPoolInfo = zero{ queueFamilyIndex = graphicsResources^.graphicsQueueFamilyL
                             } :: CommandPoolCreateInfo
   commandPool <- withCommandPool device commandPoolInfo Nothing bracketCont
   logDebug "Created command pool."
 
-  let SurfaceFormatKHR{format} = graphicsResources^.swapchainFormatL
-      swapchainImages = graphicsResources^.swapchainImagesL
-  imageViews <- withImageViews device format swapchainImages
+  images <- snd <$> getSwapchainImagesKHR device swapchain
 
-  ivsWithFbs <- withFramebuffers graphicsResources pipelineDetails imageViews
+  let SurfaceFormatKHR{format} = graphicsResources^.swapchainFormatL
+  imgsWithViews <- withImageViews device format images
+
+  ivsWithFbs <- withFramebuffers graphicsResources pipelineDetails imgsWithViews
 
   let commandBuffersInfo = zero{ commandPool
                                , level = COMMAND_BUFFER_LEVEL_PRIMARY
                                , commandBufferCount = fromIntegral $ length ivsWithFbs
                                }
   commandBuffers <- withCommandBuffers device commandBuffersInfo bracketCont
-  let buffers = V.zipWith (\(imageView, framebuffer) commandBuffer -> MkBufferCollection{..})
+  let buffers = V.zipWith (\(image, imageView, framebuffer) commandBuffer -> MkBufferCollection{..})
                           ivsWithFbs commandBuffers
   logDebug "Created buffers."
+
+  semaphores <- fmap (uncurry MkSemaphores) . bisequence . dupe $
+    withSemaphore device zero Nothing bracketCont
+  logDebug "Created semaphores."
 
   lift . mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) $ setupCommands *> mainLoop

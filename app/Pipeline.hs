@@ -70,7 +70,7 @@ withGraphicsPipeline graphicsResources = do
   layout <- withGraphicsPipelineLayout device
   renderPass <- withGraphicsRenderPass graphicsResources
 
-  pipelines <- catchVk $ evalContT do
+  pipelines <- snd <$> evalContT do
     vertModule <- lift $ loadShader device vertPath
     fragModule <- lift $ loadShader device fragPath
 
@@ -119,8 +119,16 @@ withGraphicsRenderPass graphicsResources = do
       subpass = zero{ pipelineBindPoint = PIPELINE_BIND_POINT_GRAPHICS
                     , colorAttachments = [colorAttachmentRef]
                     } :: SubpassDescription
+      dependency = zero{ srcSubpass = SUBPASS_EXTERNAL
+                       , dstSubpass = 0
+                       , srcStageMask = PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                       , srcAccessMask = zero
+                       , dstStageMask = PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                       , dstAccessMask = ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                       } :: SubpassDependency
       renderPassInfo = zero{ attachments = [colorAttachment]
                            , subpasses = [subpass]
+                           , dependencies = [dependency]
                            } :: RenderPassCreateInfo '[]
 
   withRenderPass device renderPassInfo Nothing bracketCont

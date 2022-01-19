@@ -44,7 +44,7 @@ type FragmentDefs =
 fragment :: ShaderModule "main" FragmentShader FragmentDefs _
 fragment = shader do
   pointSize <- #pointSize
-  #color .= Vec4 (1 - pointSize / 100) 0 0 1
+  #color .= Vec4 (1 - pointSize / 50) 0 0 1
 
 shaderPipeline :: ShaderPipeline FilePath
 shaderPipeline = ShaderPipeline $ StructInput @VertexInput @Points
