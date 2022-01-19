@@ -3,7 +3,6 @@
 module Pipeline where
 
 import RIO
-import Control.Monad.Trans.Cont (ContT, evalContT)
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , IOSSurfaceCreateInfoMVK(view)
@@ -13,23 +12,23 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      )
 import Vulkan.Zero
 
-import Utils
 import Types
 import Shaders (vertPath, fragPath)
 import Data.Bits ((.|.))
 import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
+import Control.Monad.Trans.Resource (MonadResource, allocate, ReleaseKey, release)
 
-loadShader :: MonadUnliftIO m => Device -> FilePath -> ContT r m ShaderModule
+loadShader :: MonadResource m => Device -> FilePath -> m (ReleaseKey, ShaderModule)
 loadShader device path = do
   bytes <- readFileBinary path
-  withShaderModule device zero{code = bytes} Nothing bracketCont
+  withShaderModule device zero{code = bytes} Nothing allocate
 
-withGraphicsPipelineLayout :: MonadUnliftIO m => Device -> ContT r m PipelineLayout
+withGraphicsPipelineLayout :: MonadResource m => Device -> m (ReleaseKey, PipelineLayout)
 withGraphicsPipelineLayout device = do
   let layoutInfo = zero
-  withPipelineLayout device layoutInfo Nothing bracketCont
+  withPipelineLayout device layoutInfo Nothing allocate
 
-withGraphicsPipeline :: MonadUnliftIO m => GraphicsResources -> ContT r m PipelineDetails
+withGraphicsPipeline :: MonadResource m => GraphicsResources -> m PipelineDetails
 withGraphicsPipeline graphicsResources = do
   let extent@Extent2D{width, height} = graphicsResources^.swapchainExtentL
       device = graphicsResources^.deviceL
@@ -67,40 +66,43 @@ withGraphicsPipeline graphicsResources = do
       colorBlendState = Just $ SomeStruct zero{ logicOpEnable = False
                                               , attachments = [blendAttachment]
                                               }
-  layout <- withGraphicsPipelineLayout device
-  renderPass <- withGraphicsRenderPass graphicsResources
+  (_, layout) <- withGraphicsPipelineLayout device
+  (_, renderPass) <- withGraphicsRenderPass graphicsResources
 
-  pipelines <- snd <$> evalContT do
-    vertModule <- lift $ loadShader device vertPath
-    fragModule <- lift $ loadShader device fragPath
+  (releaseVert, vertModule) <- loadShader device vertPath
+  (releaseFrag, fragModule) <- loadShader device fragPath
 
-    let vertShaderStageInfo = zero{ stage = SHADER_STAGE_VERTEX_BIT
-                                  , module' = vertModule
-                                  , name = "main"
-                                  }
-        fragShaderStageInfo = zero{ stage = SHADER_STAGE_FRAGMENT_BIT
-                                  , module' = fragModule
-                                  , name = "main"
-                                  }
-        shaderStages = SomeStruct <$> [vertShaderStageInfo, fragShaderStageInfo]
-        pipelineInfo = pure $ SomeStruct zero{ stages = shaderStages
-                                             , vertexInputState
-                                             , inputAssemblyState
-                                             , viewportState
-                                             , rasterizationState
-                                             , multisampleState
-                                             , colorBlendState
-                                             , layout
-                                             , renderPass
-                                             , subpass = 0
-                                             }
+  let vertShaderStageInfo = zero{ stage = SHADER_STAGE_VERTEX_BIT
+                                , module' = vertModule
+                                , name = "main"
+                                }
+      fragShaderStageInfo = zero{ stage = SHADER_STAGE_FRAGMENT_BIT
+                                , module' = fragModule
+                                , name = "main"
+                                }
+      shaderStages = SomeStruct <$> [vertShaderStageInfo, fragShaderStageInfo]
+      pipelineInfo = pure $ SomeStruct zero{ stages = shaderStages
+                                           , vertexInputState
+                                           , inputAssemblyState
+                                           , viewportState
+                                           , rasterizationState
+                                           , multisampleState
+                                           , colorBlendState
+                                           , layout
+                                           , renderPass
+                                           , subpass = 0
+                                           }
 
-    lift $ withGraphicsPipelines device zero pipelineInfo Nothing bracketCont
+  (_, (_, pipelines)) <- withGraphicsPipelines device zero pipelineInfo Nothing allocate
+
+  -- We don't need the shader modules anymore after creating the pipeline
+  traverse_ @[] release [releaseVert, releaseFrag]
+
   case pipelines of
     [pipeline]      -> pure $ MkPipelineDetails pipeline renderPass
     (length -> num) -> throwIO $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
 
-withGraphicsRenderPass :: MonadUnliftIO m => GraphicsResources -> ContT r m RenderPass
+withGraphicsRenderPass :: MonadResource m => GraphicsResources -> m (ReleaseKey, RenderPass)
 withGraphicsRenderPass graphicsResources = do
   let SurfaceFormatKHR{format} = graphicsResources^.swapchainFormatL
       device = graphicsResources^.deviceL
@@ -131,4 +133,4 @@ withGraphicsRenderPass graphicsResources = do
                            , dependencies = [dependency]
                            } :: RenderPassCreateInfo '[]
 
-  withRenderPass device renderPassInfo Nothing bracketCont
+  withRenderPass device renderPassInfo Nothing allocate

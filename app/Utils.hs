@@ -2,7 +2,6 @@ module Utils where
 
 import RIO
 import Data.Tuple (swap)
-import Control.Monad.Trans.Cont (ContT (ContT))
 
 traverseToSnd :: Functor f => (a -> f b) -> a -> f (a, b)
 traverseToSnd = liftA2 fmap (,)
@@ -16,6 +15,3 @@ plural str n = str <> bool "s" "" (n == 1)
 -- in base since 4.16
 clamp :: Ord a => (a, a) -> a -> a
 clamp (low, high) a = min high (max a low)
-
-bracketCont :: MonadUnliftIO m => m a -> (a -> m b) -> ContT r m a
-bracketCont = (ContT .) . bracket

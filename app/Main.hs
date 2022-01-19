@@ -40,7 +40,7 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
-import Utils (traverseToSnd, plural, clamp, bracketCont)
+import Utils (traverseToSnd, plural, clamp)
 import Foreign (malloc, nullPtr, Storable (peek))
 import Data.Coerce (coerce)
 import Data.Foldable (find)
@@ -54,6 +54,7 @@ import Types
 import Pipeline (withGraphicsPipeline)
 import Data.Tuple.Extra (dupe)
 import Data.Finite (Finite, natToFinite, modulo)
+import Control.Monad.Trans.Resource (allocate, ReleaseKey, MonadResource, runResourceT)
 
 mkConfig :: Options -> Config
 mkConfig (MkOptions w h _ l) = MkConfig (MkWindowSize w h) l
@@ -90,18 +91,18 @@ main = evalContT do
     logError $ display @SomeException e
     exitFailure
 
-withGLFW :: MonadUnliftIO m => ContT r m GLFWToken
-withGLFW = bracketCont
+withGLFW :: MonadResource m => m (ReleaseKey, GLFWToken)
+withGLFW = allocate
   do liftIO $ ifM GLFW.init (pure UnsafeMkGLFWToken)
                             (throwIO GLFWInitError)
   do const $ liftIO GLFW.terminate
 
-withWindow :: (MonadUnliftIO m, MonadReader env m, HasWindowSize env)
-           => GLFWToken -> ContT r m GLFW.Window
+withWindow :: (MonadReader env m, HasWindowSize env, MonadResource m)
+           => GLFWToken -> m (ReleaseKey, GLFW.Window)
 withWindow !_ = do
   width <- views windowWidthL fromIntegral
   height <- views windowHeightL fromIntegral
-  bracketCont
+  allocate
     do liftIO do
          mapM_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
                                    , GLFW.WindowHint'Resizable False
@@ -111,8 +112,8 @@ withWindow !_ = do
            GLFW.createWindow width height progName Nothing Nothing
     do liftIO . GLFW.destroyWindow
 
-withWindowSurface :: MonadUnliftIO m => Instance -> GLFW.Window -> ContT r m SurfaceKHR
-withWindowSurface inst window = bracketCont
+withWindowSurface :: MonadResource m => Instance -> GLFW.Window -> m (ReleaseKey, SurfaceKHR)
+withWindowSurface inst window = allocate
   do liftIO do surfacePtr <- malloc @SurfaceKHR
                result <- GLFW.createWindowSurface (instanceHandle inst) window nullPtr surfacePtr
                peek =<< catchVk (coerce @Int32 result, surfacePtr)
@@ -138,7 +139,7 @@ drawFrame currentFrame = do
 
   _result <- waitForFences device [ixSync inFlight] True maxBound
 
-  imageIndex <- snd <$>
+  (_, imageIndex) <-
     acquireNextImageKHR device swapchain maxBound (ixSync imageAvailable) NULL_HANDLE
 
   MkBufferCollection{commandBuffer, imageInFlight} <- fromMaybeM
@@ -187,7 +188,7 @@ mainLoop = do
 validationLayers :: (MonadIO m, MonadReader env m, HasEnableValidationLayers env)
                  => m (Vector ByteString)
 validationLayers = fmap V.fromList $ view enableValidationLayersL >>= bool (pure []) do
-   properties <- snd <$> enumerateInstanceLayerProperties
+   (_, properties) <- enumerateInstanceLayerProperties
    case NE.nonEmpty $ filter (not . (properties `hasLayer`)) layers of
      Nothing          -> pure layers
      Just unsupported -> throwIO $ VkValidationLayersNotSupported unsupported
@@ -310,14 +311,14 @@ swapchainCreateInfo window
                           , minImageCount, maxImageCount
                           } = capabilities
 
-withImageFences :: MonadUnliftIO m => Vector Image -> ContT r m (Vector (Image, IORef (Maybe Fence)))
+withImageFences :: MonadResource m => Vector Image -> m (Vector (Image, IORef (Maybe Fence)))
 withImageFences = traverse \image -> (image,) <$> newIORef Nothing
 
-withImageViews :: MonadUnliftIO m
+withImageViews :: MonadResource m
                => Device -> Format -> Vector (Image, fence)
-               -> ContT r m (Vector (Image, fence, ImageView))
+               -> m (Vector (Image, fence, ImageView))
 withImageViews device format =
-  traverse \(image, fence) -> (image, fence,) <$> withImageView device ivInfo{image} Nothing bracketCont
+  traverse \(image, fence) -> (image, fence,) . snd <$> withImageView device ivInfo{image} Nothing allocate
   where
     ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
                  , format
@@ -328,12 +329,12 @@ withImageViews device format =
                            , layerCount = 1
                            }
 
-withFramebuffers :: MonadUnliftIO m
+withFramebuffers :: MonadResource m
                  => GraphicsResources -> PipelineDetails -> Vector (Image, fence, ImageView)
-                 -> ContT r m (Vector (Image, fence, ImageView, Framebuffer))
+                 -> m (Vector (Image, fence, ImageView, Framebuffer))
 withFramebuffers graphicsResources MkPipelineDetails{renderPass} = traverse
-  \(image, fence, imageView) -> (image, fence, imageView,) <$>
-    withFramebuffer device fbInfo{attachments = [imageView]} Nothing bracketCont
+  \(image, fence, imageView) -> (image, fence, imageView,) . snd <$>
+    withFramebuffer device fbInfo{attachments = [imageView]} Nothing allocate
   where
     device = graphicsResources^.deviceL
     Extent2D{width, height} = graphicsResources^.swapchainExtentL
@@ -361,10 +362,10 @@ setupCommands = do
         cmdDraw commandBuffer 3 1 0 0
   logDebug "Set up commands."
 
-withGraphicsResources :: (MonadUnliftIO m, MonadReader env m, HasApp env)
-                         => ContT r m GraphicsResources
+withGraphicsResources :: (MonadResource m, MonadReader env m, HasApp env)
+                      => m GraphicsResources
 withGraphicsResources = do
-  glfwToken <- withGLFW
+  (_, glfwToken) <- withGLFW
   logDebug "Initialized GLFW."
 
   unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
@@ -378,11 +379,11 @@ withGraphicsResources = do
   let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
       instanceCreateInfo = zero{applicationInfo, enabledExtensionNames, enabledLayerNames}
 
-  inst <- withInstance instanceCreateInfo Nothing bracketCont
-  window <- withWindow glfwToken
+  (_, inst) <- withInstance instanceCreateInfo Nothing allocate
+  (_, window) <- withWindow glfwToken
   logDebug "Created window."
 
-  surface <- withWindowSurface inst window
+  (_, surface) <- withWindowSurface inst window
   logDebug "Created surface."
 
   (physDev, swapchainSupportDetails, queueFamilyIndices@(MkQueueFamilyIndices{..})) <-
@@ -395,7 +396,7 @@ withGraphicsResources = do
                              , enabledLayerNames
                              , enabledExtensionNames = deviceExtensions
                              }
-  device <- withDevice physDev deviceCreateInfo Nothing bracketCont
+  (_, device) <- withDevice physDev deviceCreateInfo Nothing allocate
   logDebug "Created logical device."
 
   queues <- uncurry MkQueues <$>
@@ -404,7 +405,7 @@ withGraphicsResources = do
 
   scInfo@(SwapchainCreateInfoKHR {imageFormat, imageColorSpace, imageExtent = swapchainExtent}) <-
     swapchainCreateInfo window surface swapchainSupportDetails queueFamilyIndices
-  swapchain <- withSwapchainKHR device scInfo Nothing bracketCont
+  (_, swapchain) <- withSwapchainKHR device scInfo Nothing allocate
   logDebug "Created swapchain."
 
   let swapchainFormat  = SurfaceFormatKHR imageFormat imageColorSpace
@@ -413,7 +414,7 @@ withGraphicsResources = do
   pure $ MkGraphicsResources{..}
 
 runApp :: HasApp env => RIO env ()
-runApp = evalContT do
+runApp = runResourceT do
   liftIO compileAllShaders
   logDebug "Compiled shaders."
 
@@ -428,7 +429,7 @@ runApp = evalContT do
       swapchain = graphicsResources^.swapchainL
       commandPoolInfo = zero{ queueFamilyIndex = graphicsResources^.graphicsQueueFamilyL
                             } :: CommandPoolCreateInfo
-  commandPool <- withCommandPool device commandPoolInfo Nothing bracketCont
+  (_, commandPool) <- withCommandPool device commandPoolInfo Nothing allocate
   logDebug "Created command pool."
 
   images <- snd <$> getSwapchainImagesKHR device swapchain
@@ -443,15 +444,15 @@ runApp = evalContT do
                                , level = COMMAND_BUFFER_LEVEL_PRIMARY
                                , commandBufferCount = fromIntegral $ length ivsWithFbs
                                }
-  commandBuffers <- withCommandBuffers device commandBuffersInfo bracketCont
+  (_, commandBuffers) <- withCommandBuffers device commandBuffersInfo allocate
   let buffers = V.zipWith (\(image, imageInFlight, imageView, framebuffer) commandBuffer -> MkBufferCollection{..})
                           ivsWithFbs commandBuffers
   logDebug "Created buffers."
 
   (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
-    withSemaphore device zero Nothing bracketCont
+    snd <$> withSemaphore device zero Nothing allocate
   inFlight <- Sized.replicateM $
-    withFence device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing bracketCont
+    snd <$> withFence device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate
   let syncs = MkSyncs{..}
   logDebug "Created syncs."
 
