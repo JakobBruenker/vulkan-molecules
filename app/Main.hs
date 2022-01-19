@@ -1,4 +1,3 @@
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedLists #-}
 
 module Main where
@@ -6,7 +5,6 @@ module Main where
 import RIO
 import RIO.ByteString qualified as B
 import RIO.NonEmpty qualified as NE
-import RIO.Text qualified as T
 import RIO.Vector qualified as V
 import Data.List.NonEmpty.Extra qualified as NE
 
@@ -40,8 +38,7 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
-import TH (makeRioClassy)
-import Utils (traverseToSnd, plural, clamp, bracketCont)
+import Utils (traverseToSnd, plural, clamp, bracketCont, catchVk)
 import Foreign (malloc, nullPtr, Storable (peek))
 import Data.Coerce (coerce)
 import Data.Foldable (find)
@@ -50,93 +47,9 @@ import Data.List (nub)
 import Control.Monad.Trans.Maybe (runMaybeT)
 import Control.Monad.Trans.Cont (evalContT, ContT(..))
 
-data AppException
-  = GLFWInitError
-  | GLFWWindowError
-  | GLFWVulkanNotSupportedError
-  | VkGenericError Result
-  | VkValidationLayersNotSupported (NonEmpty ByteString)
-  | VkNoPhysicalDevicesError
-  | VkNoSuitableDevicesError
-
-instance Exception AppException
-
-instance Show AppException where
-  show = T.unpack . textDisplay
-
-instance Display AppException where
-  display = \case
-    GLFWInitError -> "Failed to initialize GLFW."
-    GLFWWindowError -> "Failed to create window."
-    GLFWVulkanNotSupportedError -> "GLFW failed to find Vulkan loader or ICD."
-    VkGenericError r -> "Vulkan returned error: " <> displayShow r
-    VkValidationLayersNotSupported ls ->
-      "Requested validation layer" <> num <> " not supported: " <>
-        (displayBytesUtf8 . B.intercalate ", " . toList) ls <> "."
-      where num = case ls of
-              _ :| [] -> " is"
-              _       -> "s are"
-    VkNoPhysicalDevicesError -> "No physical devices found."
-    VkNoSuitableDevicesError -> "No suitable devices found."
-
-data Options = MkOptions { optWidth            :: Natural
-                         , optHeight           :: Natural
-                         , optVerbose          :: Bool
-                         , optValidationLayers :: Bool
-                         }
-
--- To keep track of whether GLFW is initialized
-data GLFWToken = UnsafeMkGLFWToken
-
-data WindowSize = MkWindowSize { windowWidth  :: Natural
-                               , windowHeight :: Natural
-                               }
-makeRioClassy ''WindowSize
-
-data Config = MkConfig { windowSize             :: WindowSize
-                       , enableValidationLayers :: Bool
-                       }
-makeRioClassy ''Config
-
-data App = MkApp { logFunc :: LogFunc
-                 , config  :: Config
-                 }
-makeRioClassy ''App
-
-data Queues = MkQueues { graphicsQueue :: Queue
-                       , presentQueue  :: Queue
-                       }
-makeRioClassy ''Queues
-
-data SwapchainDetails = MkSwapchainDetails { swapchainFormat     :: SurfaceFormatKHR
-                                           , swapchainExtent     :: Extent2D
-                                           , swapchainImages     :: Vector Image
-                                           , swapchainImageViews :: Vector ImageView
-                                           }
-makeRioClassy ''SwapchainDetails
-
-data GraphicsResources = MkGraphicsResources { window           :: GLFW.Window
-                                             , inst             :: Instance
-                                             , device           :: Device
-                                             , queues           :: Queues
-                                             , surface          :: SurfaceKHR
-                                             , swapchainDetails :: SwapchainDetails
-                                             }
-makeRioClassy ''GraphicsResources
-
-data VulkanApp = MkVulkanApp { app               :: App
-                             , graphicsResources :: GraphicsResources
-                             }
-makeRioClassy ''VulkanApp
-
-data QueueFamilyIndices = MkQueueFamilyIndices { graphicsQueueFamily :: Word32
-                                               , presentQueueFamily  :: Word32
-                                               }
-
-data SwapchainSupportDetails = MkSwapchainSupportDetails { swapchainCapabilities :: SurfaceCapabilitiesKHR
-                                                         , swapchainFormats      :: NonEmpty SurfaceFormatKHR
-                                                         , swapchainPresentModes :: NonEmpty PresentModeKHR
-                                                         }
+import Shaders (compileAllShaders)
+import Types
+import Pipeline (withGraphicsPipeline)
 
 mkConfig :: Options -> Config
 mkConfig (MkOptions w h _ l) = MkConfig (MkWindowSize w h) l
@@ -347,16 +260,23 @@ withImageViews device format =
                            , layerCount = 1
                            }
 
--- TODO this is probably unnecessary, since the library says it already throws
--- an exception if the result is not SUCCESS
-catchVk :: MonadIO m => m (Result, a) -> m a
-catchVk = (=<<) \case
-  (SUCCESS, x) -> pure x
-  (err    , _) -> throwIO $ VkGenericError err
+withFramebuffers :: MonadUnliftIO m => GraphicsResources -> PipelineDetails -> ContT r m (Vector Framebuffer)
+withFramebuffers graphicsResources MkPipelineDetails{renderPass} = for imageViews \imageView ->
+  withFramebuffer device fbInfo{attachments = [imageView]} Nothing bracketCont
+  where
+    device = graphicsResources^.deviceL
+    imageViews = graphicsResources^.swapchainImageViewsL
+    Extent2D{width, height} = graphicsResources^.swapchainExtentL
 
-acquireGraphicsResources :: (MonadUnliftIO m, MonadReader env m, HasApp env)
+    fbInfo = zero{ renderPass
+                 , width
+                 , height
+                 , layers = 1
+                 }
+
+withGraphicsResources :: (MonadUnliftIO m, MonadReader env m, HasApp env)
                          => ContT r m GraphicsResources
-acquireGraphicsResources = do
+withGraphicsResources = do
   glfwToken <- withGLFW
   logDebug "Initialized GLFW."
 
@@ -407,10 +327,18 @@ acquireGraphicsResources = do
 
   pure $ MkGraphicsResources{..}
 
-
 runApp :: HasApp env => RIO env ()
 runApp = evalContT do
+  liftIO compileAllShaders
+  logDebug "Compiled shaders."
+
   logDebug "Started boxticle."
 
-  graphicsResources <- acquireGraphicsResources
+  graphicsResources <- withGraphicsResources
+
+  pipelineDetails <- withGraphicsPipeline graphicsResources
+  logDebug "Created pipeline."
+
+  framebuffers <- withFramebuffers graphicsResources pipelineDetails
+
   lift $ mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) mainLoop

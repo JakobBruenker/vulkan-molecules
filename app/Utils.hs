@@ -1,11 +1,10 @@
 module Utils where
 
-import Control.Applicative (liftA2)
+import RIO
 import Data.Tuple (swap)
-import Data.Bool (bool)
-import Data.String (IsString)
 import Control.Monad.Trans.Cont (ContT (ContT))
-import RIO (MonadUnliftIO, bracket)
+import Vulkan (Result (SUCCESS))
+import Types
 
 traverseToSnd :: Functor f => (a -> f b) -> a -> f (a, b)
 traverseToSnd = liftA2 fmap (,)
@@ -22,3 +21,10 @@ clamp (low, high) a = min high (max a low)
 
 bracketCont :: MonadUnliftIO m => m a -> (a -> m b) -> ContT r m a
 bracketCont = (ContT .) . bracket
+
+-- This is probably unnecessary, since the library says it already throws
+-- an exception if the result is not SUCCESS
+catchVk :: MonadIO m => m (Result, a) -> m a
+catchVk = (=<<) \case
+  (SUCCESS, x) -> pure x
+  (err    , _) -> throwIO $ VkGenericError err

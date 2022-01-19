@@ -26,8 +26,10 @@ executable boxticle
 
     -- Modules included in this executable, other than Main.
     other-modules:    TH
-                      Utils
+                      Pipeline
                       Shaders
+                      Types
+                      Utils
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -40,6 +42,7 @@ executable boxticle
                       , rio ^>=0.1.20
                       , lens ^>=5.0.1
                       , extra ^>=1.7.9
+                      , vector-sized ^>= 1.4.0
                       , fir
     hs-source-dirs:     app
     default-language:   Haskell2010
@@ -78,6 +81,7 @@ executable boxticle
                         MultiParamTypeClasses,
                         MultiWayIf,
                         NamedFieldPuns,
+                        NoImplicitPrelude,
                         OverloadedLabels,
                         OverloadedStrings,
                         PartialTypeSignatures,
