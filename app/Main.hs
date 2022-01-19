@@ -57,22 +57,37 @@ import Data.Finite (Finite, natToFinite, modulo)
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, MonadResource, runResourceT)
 
 mkConfig :: Options -> Config
-mkConfig (MkOptions w h _ l) = MkConfig (MkWindowSize w h) l
+mkConfig (MkOptions w h n f m _ l) = MkConfig (MkWindowSize w h) n f m l
 
 options :: Parser Options
 options = MkOptions
   <$> option auto
       ( long "width"
-     <> help "The width of the window"
+     <> help "The width of the window in windowed mode"
      <> showDefault
      <> Opt.value 800
      <> metavar "WIDTH")
   <*> option auto
       ( long "height"
-     <> help "The height of the window"
+     <> help "The height of the window in windowed mode"
      <> showDefault
      <> Opt.value 600
      <> metavar "HEIGHT")
+  <*> switch
+      ( long "native"
+     <> short 'n'
+     <> help "Use native resolution in fullscreen mode instead of provided width and height")
+  <*> switch
+      ( long "fullscreen"
+     <> short 'f'
+     <> help "Start in fullscreen mode")
+  <*> option auto
+      ( long "monitor"
+     <> short 'm'
+     <> help "Which monitor to use for fullscreen mode"
+     <> showDefault
+     <> Opt.value 0
+     <> metavar "MONITOR_INDEX")
   <*> switch
       ( long "verbose"
      <> short 'v'
@@ -97,20 +112,31 @@ withGLFW = allocate
                             (throwIO GLFWInitError)
   do const $ liftIO GLFW.terminate
 
-withWindow :: (MonadReader env m, HasWindowSize env, MonadResource m)
+withWindow :: (MonadReader env m, HasApp env, MonadResource m)
            => GLFWToken -> m (ReleaseKey, GLFW.Window)
 withWindow !_ = do
-  width <- views windowWidthL fromIntegral
-  height <- views windowHeightL fromIntegral
+  native <- view nativeL
+  fullscreen <- view fullscreenL
+  monitorIndex <- views monitorIndexL fromIntegral
+  monitor <- preview (ix monitorIndex) . concat <$> liftIO GLFW.getMonitors
+  when (fullscreen && isNothing monitor) $
+    logWarn "Couldn't find desired monitor. Using windowed mode."
+  (width, height) <- if
+    | native && fullscreen, Just mon <- monitor -> liftIO do
+        (_, _, w, h) <- GLFW.getMonitorWorkarea mon
+        pure (w, h)
+    | otherwise -> join bitraverse (views ?? fromIntegral) (windowWidthL, windowHeightL)
+  logWarn $ "using " <> displayShow width <> ", " <> displayShow height
   allocate
-    do liftIO do
-         mapM_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
-                                   , GLFW.WindowHint'Resizable False
-                                   ]
-         progName <- getProgName
-         fromMaybeM (throwIO GLFWWindowError) $
-           GLFW.createWindow width height progName Nothing Nothing
-    do liftIO . GLFW.destroyWindow
+    do
+      mapM_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
+                                , GLFW.WindowHint'Decorated False
+                                , GLFW.WindowHint'Resizable False
+                                ]
+      progName <- getProgName
+      fromMaybeM (throwIO GLFWWindowError) $
+        GLFW.createWindow width height progName monitor Nothing
+    do GLFW.destroyWindow
 
 withWindowSurface :: MonadResource m => Instance -> GLFW.Window -> m (ReleaseKey, SurfaceKHR)
 withWindowSurface inst window = allocate
@@ -312,7 +338,6 @@ swapchainCreateInfo window
                              , PRESENT_MODE_FIFO_RELAXED_KHR
                              , PRESENT_MODE_FIFO_KHR
                              ] :: [PresentModeKHR]
-
     presentMode = fromMaybe (NE.head presentModes) $ find (`elem` presentModes) presentModesByPriority
 
     SurfaceCapabilitiesKHR{ currentExtent, currentTransform
@@ -467,3 +492,5 @@ runApp = runResourceT do
   logDebug "Created syncs."
 
   lift . mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) $ setupCommands *> mainLoop
+
+  logInfo "Goodbye!"

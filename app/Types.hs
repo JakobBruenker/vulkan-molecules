@@ -53,6 +53,9 @@ instance Display AppException where
 
 data Options = MkOptions { optWidth            :: Natural
                          , optHeight           :: Natural
+                         , optNative           :: Bool
+                         , optFullscreen       :: Bool
+                         , optMonitorIndex     :: Natural
                          , optVerbose          :: Bool
                          , optValidationLayers :: Bool
                          }
@@ -73,6 +76,9 @@ data WindowSize = MkWindowSize { windowWidth  :: Natural
 makeRioClassy ''WindowSize
 
 data Config = MkConfig { windowSize             :: WindowSize
+                       , native                 :: Bool
+                       , fullscreen             :: Bool
+                       , monitorIndex           :: Natural
                        , enableValidationLayers :: Bool
                        }
 makeRioClassy ''Config
