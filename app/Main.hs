@@ -264,14 +264,17 @@ deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
   ]
 
-swapchainCreateInfo :: MonadIO m
+swapchainCreateInfo :: (MonadIO m, MonadReader env m, HasLogFunc env)
                     => GLFW.Window -> SurfaceKHR -> SwapchainSupportDetails -> QueueFamilyIndices
                     -> m (SwapchainCreateInfoKHR '[])
 swapchainCreateInfo window
                     surface
-                    (MkSwapchainSupportDetails capabilities formats _)
+                    (MkSwapchainSupportDetails capabilities formats presentModes)
                     (MkQueueFamilyIndices{graphicsQueueFamily, presentQueueFamily}) = do
   imageExtent <- liftIO extent
+
+  logDebug $ "Using " <> displayShow presentMode <> "."
+
   pure zero{ surface
            , minImageCount = imageCount
            , imageFormat
@@ -295,7 +298,6 @@ swapchainCreateInfo window
     SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} = liftA2 fromMaybe NE.head
             (find (== SurfaceFormatKHR FORMAT_R8G8B8A8_SRGB COLOR_SPACE_SRGB_NONLINEAR_KHR))
             formats
-    presentMode = PRESENT_MODE_MAILBOX_KHR -- TODO select FIFO if MAILBOX is not available
     extent | currentWidth /= maxBound = pure currentExtent
            | otherwise = do
              (fbWidth, fbHeight) <- over both fromIntegral <$> GLFW.getFramebufferSize window
@@ -305,6 +307,13 @@ swapchainCreateInfo window
       where Extent2D{width = currentWidth} = currentExtent
             Extent2D{width = minWidth, height = minHeight} = minImageExtent
             Extent2D{width = maxWidth, height = maxHeight} = maxImageExtent
+    presentModesByPriority = [ PRESENT_MODE_MAILBOX_KHR
+                             , PRESENT_MODE_IMMEDIATE_KHR
+                             , PRESENT_MODE_FIFO_RELAXED_KHR
+                             , PRESENT_MODE_FIFO_KHR
+                             ] :: [PresentModeKHR]
+
+    presentMode = fromMaybe (NE.head presentModes) $ find (`elem` presentModes) presentModesByPriority
 
     SurfaceCapabilitiesKHR{ currentExtent, currentTransform
                           , minImageExtent, maxImageExtent
@@ -318,7 +327,8 @@ withImageViews :: MonadResource m
                => Device -> Format -> Vector (Image, fence)
                -> m (Vector (Image, fence, ImageView))
 withImageViews device format =
-  traverse \(image, fence) -> (image, fence,) . snd <$> withImageView device ivInfo{image} Nothing allocate
+  traverse \(image, fence) ->
+    (image, fence,) . snd <$> withImageView device ivInfo{image} Nothing allocate
   where
     ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
                  , format
