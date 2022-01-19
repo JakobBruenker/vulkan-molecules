@@ -260,12 +260,13 @@ withImageViews device format =
                            , layerCount = 1
                            }
 
-withFramebuffers :: MonadUnliftIO m => GraphicsResources -> PipelineDetails -> ContT r m (Vector Framebuffer)
-withFramebuffers graphicsResources MkPipelineDetails{renderPass} = for imageViews \imageView ->
-  withFramebuffer device fbInfo{attachments = [imageView]} Nothing bracketCont
+withFramebuffers :: MonadUnliftIO m
+                 => GraphicsResources -> PipelineDetails -> Vector ImageView
+                 -> ContT r m (Vector (ImageView, Framebuffer))
+withFramebuffers graphicsResources MkPipelineDetails{renderPass} = traverse \imageView ->
+  (imageView,) <$> withFramebuffer device fbInfo{attachments = [imageView]} Nothing bracketCont
   where
     device = graphicsResources^.deviceL
-    imageViews = graphicsResources^.swapchainImageViewsL
     Extent2D{width, height} = graphicsResources^.swapchainExtentL
 
     fbInfo = zero{ renderPass
@@ -273,6 +274,22 @@ withFramebuffers graphicsResources MkPipelineDetails{renderPass} = for imageView
                  , height
                  , layers = 1
                  }
+
+setupCommands :: HasVulkanApp env => RIO env ()
+setupCommands =
+  view buffersL >>= traverse_ \MkBufferCollection{commandBuffer, framebuffer} ->
+    useCommandBuffer commandBuffer zero do
+      renderPass <- view renderPassL
+      extent <- view swapchainExtentL
+      graphicsPipeline <- view pipelineL
+      let renderPassInfo = zero{ renderPass
+                               , framebuffer
+                               , renderArea = zero{extent}
+                               , clearValues = [Color $ Float32 0 0 0.5 1]
+                               }
+      cmdUseRenderPass commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
+        cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
+        cmdDraw commandBuffer 3 1 0 0
 
 withGraphicsResources :: (MonadUnliftIO m, MonadReader env m, HasApp env)
                          => ContT r m GraphicsResources
@@ -321,7 +338,6 @@ withGraphicsResources = do
   logDebug "Created swapchain."
 
   swapchainImages <- catchVk $ getSwapchainImagesKHR device swapchain
-  swapchainImageViews <- withImageViews device imageFormat swapchainImages
   let swapchainFormat  = SurfaceFormatKHR imageFormat imageColorSpace
       swapchainDetails = MkSwapchainDetails{..}
 
@@ -339,20 +355,25 @@ runApp = evalContT do
   pipelineDetails <- withGraphicsPipeline graphicsResources
   logDebug "Created pipeline."
 
-  framebuffers <- withFramebuffers graphicsResources pipelineDetails
-
   let device = graphicsResources^.deviceL
-
-  let commandPoolInfo = zero{ queueFamilyIndex = graphicsResources^.graphicsQueueFamilyL
+      commandPoolInfo = zero{ queueFamilyIndex = graphicsResources^.graphicsQueueFamilyL
                             } :: CommandPoolCreateInfo
   commandPool <- withCommandPool device commandPoolInfo Nothing bracketCont
   logDebug "Created command pool."
 
+  let SurfaceFormatKHR{format} = graphicsResources^.swapchainFormatL
+      swapchainImages = graphicsResources^.swapchainImagesL
+  imageViews <- withImageViews device format swapchainImages
+
+  ivsWithFbs <- withFramebuffers graphicsResources pipelineDetails imageViews
+
   let commandBuffersInfo = zero{ commandPool
                                , level = COMMAND_BUFFER_LEVEL_PRIMARY
-                               , commandBufferCount = fromIntegral $ length framebuffers
+                               , commandBufferCount = fromIntegral $ length ivsWithFbs
                                }
   commandBuffers <- withCommandBuffers device commandBuffersInfo bracketCont
-  logDebug "Created command buffers."
+  let buffers = V.zipWith (\(imageView, framebuffer) commandBuffer -> MkBufferCollection{..})
+                          ivsWithFbs commandBuffers
+  logDebug "Created buffers."
 
-  lift $ mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) mainLoop
+  lift . mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) $ setupCommands *> mainLoop

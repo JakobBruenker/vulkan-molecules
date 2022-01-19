@@ -53,6 +53,11 @@ data Options = MkOptions { optWidth            :: Natural
 -- To keep track of whether GLFW is initialized
 data GLFWToken = UnsafeMkGLFWToken
 
+data BufferCollection = MkBufferCollection { imageView     :: ImageView
+                                           , framebuffer   :: Framebuffer
+                                           , commandBuffer :: CommandBuffer
+                                           }
+
 data WindowSize = MkWindowSize { windowWidth  :: Natural
                                , windowHeight :: Natural
                                }
@@ -76,7 +81,6 @@ makeRioClassy ''Queues
 data SwapchainDetails = MkSwapchainDetails { swapchainFormat     :: SurfaceFormatKHR
                                            , swapchainExtent     :: Extent2D
                                            , swapchainImages     :: Vector Image
-                                           , swapchainImageViews :: Vector ImageView
                                            }
 makeRioClassy ''SwapchainDetails
 
@@ -103,9 +107,8 @@ makeRioClassy ''PipelineDetails
 data VulkanApp = MkVulkanApp { app               :: App
                              , graphicsResources :: GraphicsResources
                              , pipelineDetails   :: PipelineDetails
-                             , framebuffers      :: Vector Framebuffer
                              , commandPool       :: CommandPool
-                             , commandBuffers    :: Vector CommandBuffer
+                             , buffers           :: Vector BufferCollection
                              }
 makeRioClassy ''VulkanApp
 
