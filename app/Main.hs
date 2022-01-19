@@ -294,7 +294,7 @@ swapchainCreateInfo window
     SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} = liftA2 fromMaybe NE.head
             (find (== SurfaceFormatKHR FORMAT_R8G8B8A8_SRGB COLOR_SPACE_SRGB_NONLINEAR_KHR))
             formats
-    presentMode = PRESENT_MODE_FIFO_KHR
+    presentMode = PRESENT_MODE_MAILBOX_KHR -- TODO select FIFO if MAILBOX is not available
     extent | currentWidth /= maxBound = pure currentExtent
            | otherwise = do
              (fbWidth, fbHeight) <- over both fromIntegral <$> GLFW.getFramebufferSize window
