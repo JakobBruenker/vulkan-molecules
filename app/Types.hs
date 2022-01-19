@@ -80,12 +80,18 @@ data SwapchainDetails = MkSwapchainDetails { swapchainFormat     :: SurfaceForma
                                            }
 makeRioClassy ''SwapchainDetails
 
-data GraphicsResources = MkGraphicsResources { window           :: GLFW.Window
-                                             , inst             :: Instance
-                                             , device           :: Device
-                                             , queues           :: Queues
-                                             , surface          :: SurfaceKHR
-                                             , swapchainDetails :: SwapchainDetails
+data QueueFamilyIndices = MkQueueFamilyIndices { graphicsQueueFamily :: Word32
+                                               , presentQueueFamily  :: Word32
+                                               }
+makeRioClassy ''QueueFamilyIndices
+
+data GraphicsResources = MkGraphicsResources { window             :: GLFW.Window
+                                             , inst               :: Instance
+                                             , device             :: Device
+                                             , queues             :: Queues
+                                             , queueFamilyIndices :: QueueFamilyIndices
+                                             , surface            :: SurfaceKHR
+                                             , swapchainDetails   :: SwapchainDetails
                                              }
 makeRioClassy ''GraphicsResources
 
@@ -98,12 +104,10 @@ data VulkanApp = MkVulkanApp { app               :: App
                              , graphicsResources :: GraphicsResources
                              , pipelineDetails   :: PipelineDetails
                              , framebuffers      :: Vector Framebuffer
+                             , commandPool       :: CommandPool
+                             , commandBuffers    :: Vector CommandBuffer
                              }
 makeRioClassy ''VulkanApp
-
-data QueueFamilyIndices = MkQueueFamilyIndices { graphicsQueueFamily :: Word32
-                                               , presentQueueFamily  :: Word32
-                                               }
 
 data SwapchainSupportDetails = MkSwapchainSupportDetails { swapchainCapabilities :: SurfaceCapabilitiesKHR
                                                          , swapchainFormats      :: NonEmpty SurfaceFormatKHR

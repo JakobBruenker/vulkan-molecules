@@ -341,4 +341,18 @@ runApp = evalContT do
 
   framebuffers <- withFramebuffers graphicsResources pipelineDetails
 
+  let device = graphicsResources^.deviceL
+
+  let commandPoolInfo = zero{ queueFamilyIndex = graphicsResources^.graphicsQueueFamilyL
+                            } :: CommandPoolCreateInfo
+  commandPool <- withCommandPool device commandPoolInfo Nothing bracketCont
+  logDebug "Created command pool."
+
+  let commandBuffersInfo = zero{ commandPool
+                               , level = COMMAND_BUFFER_LEVEL_PRIMARY
+                               , commandBufferCount = fromIntegral $ length framebuffers
+                               }
+  commandBuffers <- withCommandBuffers device commandBuffersInfo bracketCont
+  logDebug "Created command buffers."
+
   lift $ mapRIO (\env -> MkVulkanApp {app = env^.appL, ..}) mainLoop
