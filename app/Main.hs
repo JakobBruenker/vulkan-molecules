@@ -9,7 +9,7 @@ import RIO.Vector qualified as V
 import Data.List.NonEmpty.Extra qualified as NE
 
 import Control.Lens (views, (??), _1, ix)
-import Control.Monad.Extra (fromMaybeM, ifM, whenJust)
+import Control.Monad.Extra (fromMaybeM, ifM, whenJust, maybeM)
 import Data.Bits (Bits((.&.)))
 import Options.Applicative
     ( (<**>),
@@ -58,7 +58,7 @@ import Types
 import Swapchain
 
 mkConfig :: Options -> Config
-mkConfig (MkOptions w h n f m _ l) = MkConfig (MkWindowSize w h) n f m l
+mkConfig (MkOptions w h f m _ l) = MkConfig (MkWindowSize w h) f m l
 
 options :: Parser Options
 options = MkOptions
@@ -75,13 +75,9 @@ options = MkOptions
      <> Opt.value 600
      <> metavar "HEIGHT")
   <*> switch
-      ( long "native"
-     <> short 'n'
-     <> help "Use native resolution in fullscreen mode instead of provided width and height")
-  <*> switch
       ( long "fullscreen"
      <> short 'f'
-     <> help "Start in fullscreen mode")
+     <> help "Start in fullscreen (borderless windowed) mode")
   <*> option auto
       ( long "monitor"
      <> short 'm'
@@ -116,24 +112,24 @@ withGLFW = allocate
 withWindow :: (MonadReader env m, HasApp env, MonadResource m)
            => GLFWToken -> m (ReleaseKey, GLFW.Window)
 withWindow !_ = do
-  native <- view nativeL
   fullscreen <- view fullscreenL
   monitorIndex <- views monitorIndexL fromIntegral
   monitor <- preview (ix monitorIndex) . concat <$> liftIO GLFW.getMonitors
   when (fullscreen && isNothing monitor) $
     logWarn "Couldn't find desired monitor. Using windowed mode."
-  (width, height) <- if
-    | native && fullscreen, Just mon <- monitor -> liftIO do
-        (_, _, w, h) <- GLFW.getMonitorWorkarea mon
-        pure (w, h)
-    | otherwise -> join bitraverse (views ?? fromIntegral) (windowWidthL, windowHeightL)
-  allocate do mapM_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
-                                        , GLFW.WindowHint'Decorated False
-                                        , GLFW.WindowHint'Resizable False
-                                        ]
+  (xPos, yPos, width, height) <- if
+    | fullscreen, Just mon <- monitor -> liftIO $ GLFW.getMonitorWorkarea mon
+    | otherwise -> join bitraverse (views ?? fromIntegral) (0, 0, windowWidthL, windowHeightL)
+
+  allocate do traverse_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
+                                            , GLFW.WindowHint'Resizable (not fullscreen)
+                                            , GLFW.WindowHint'Decorated (not fullscreen)
+                                            , GLFW.WindowHint'Floating fullscreen
+                                            ]
               progName <- getProgName
-              fromMaybeM (throwIO GLFWWindowError) $
-                GLFW.createWindow width height progName monitor Nothing
+              maybeM (throwIO GLFWWindowError)
+                     (\window -> GLFW.setWindowPos window xPos yPos $> window)
+                     (GLFW.createWindow width height progName Nothing Nothing)
            do GLFW.destroyWindow
 
 withWindowSurface :: MonadResource m => Instance -> GLFW.Window -> m (ReleaseKey, SurfaceKHR)
@@ -168,7 +164,7 @@ drawFrame currentFrame = do
 
   MkImageRelated{commandBuffer, imageInFlight} <- fromMaybeM
     do throwIO VkCommandBufferIndexOutOfRange
-    do preview $ buffersL.ix (fromIntegral imageIndex)
+    do preview $ imageRelatedsL.ix (fromIntegral imageIndex)
 
   imageInFlightFence <- readIORef imageInFlight
 
@@ -325,7 +321,7 @@ withFramebuffers device Extent2D{width, height} renderPass images = do
 
 setupCommands :: HasBoxticle env => RIO env ()
 setupCommands = do
-  view buffersL >>= traverse_ \MkImageRelated{commandBuffer, framebuffer = framebufferRes} ->
+  view imageRelatedsL >>= traverse_ \MkImageRelated{commandBuffer, framebuffer = framebufferRes} ->
     useCommandBuffer commandBuffer zero do
       renderPass <- viewRes renderPassL
       extent <- viewRef swapchainExtentL
@@ -420,7 +416,7 @@ runApp = runResourceT do
                                , commandBufferCount = fromIntegral $ length ivsWithFbs
                                }
   (_, commandBuffers) <- withCommandBuffers device commandBuffersInfo allocate
-  buffers <- V.zipWithM
+  imageRelateds <- V.zipWithM
         (\(image, imageInFlight, imageView, framebuffer) commandBuffer -> pure MkImageRelated{..})
         ivsWithFbs commandBuffers
   logDebug "Created buffers."

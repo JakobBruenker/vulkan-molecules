@@ -56,7 +56,6 @@ instance Display AppException where
 
 data Options = MkOptions { optWidth            :: Natural
                          , optHeight           :: Natural
-                         , optNative           :: Bool
                          , optFullscreen       :: Bool
                          , optMonitorIndex     :: Natural
                          , optVerbose          :: Bool
@@ -88,7 +87,6 @@ data WindowSize = MkWindowSize { windowWidth  :: Natural
 makeRioClassy ''WindowSize
 
 data Config = MkConfig { windowSize             :: WindowSize
-                       , native                 :: Bool
                        , fullscreen             :: Bool
                        , monitorIndex           :: Natural
                        , enableValidationLayers :: Bool
@@ -150,7 +148,7 @@ makeRioClassy ''GraphicsApp
 data Boxticle = MkBoxticle { graphicsApp       :: GraphicsApp
                            , swapchainRelated  :: SwapchainRelated
                            , commandPool       :: CommandPool
-                           , buffers           :: Vector ImageRelated
+                           , imageRelateds     :: Vector ImageRelated
                            , syncs             :: Syncs
                            }
 makeRioClassy ''Boxticle
