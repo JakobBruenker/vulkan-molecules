@@ -18,6 +18,8 @@ import Control.Monad.Trans.Resource (ReleaseKey)
 
 type MaxFramesInFlight = 2
 
+data Dict c = c => Dict
+
 data AppException
   = GLFWInitError
   | GLFWWindowError
@@ -94,10 +96,10 @@ type HasWindowSize = ( HasWindowWidth
 type HasFullscreen             = ?fullscreen             :: Bool
 type HasMonitorIndex           = ?monitorIndex           :: Natural
 type HasEnableValidationLayers = ?enableValidationLayers :: Bool
-type HasConfig = ( HasWindowSize
-                 , HasFullscreen
+type HasConfig = ( HasFullscreen
                  , HasMonitorIndex
                  , HasEnableValidationLayers
+                 , HasWindowSize
                  )
 
 type HasGraphicsQueue = ?graphicsQueue :: Queue
@@ -111,7 +113,7 @@ type HasSwapchainExtent        = ?swapchainExtent        :: IORef Extent2D
 type HasSwapchain              = ?swapchain              :: MResource SwapchainKHR
 type HasRenderPass             = ?renderPass             :: MResource RenderPass
 type HasGraphicsPipelineLayout = ?graphicsPipelineLayout :: MResource PipelineLayout
-type HasGraphicsPipeline       = ?graphicsPipeline      :: MResource Pipeline
+type HasGraphicsPipeline       = ?graphicsPipeline       :: MResource Pipeline
 type HasSwapchainRelated = ( HasSwapchainFormat
                            , HasSwapchainExtent
                            , HasSwapchain
@@ -134,19 +136,26 @@ type HasSwapchainSupport = ( HasSwapchainCapabilities
                            , HasSwapchainPresentModes
                            )
 
-type HasWindow         = ?window         :: GLFW.Window
-type HasInstance       = ?instance       :: Instance
 type HasPhysicalDevice = ?physicalDevice :: PhysicalDevice
-type HasDevice         = ?device         :: Device
-type HasSurface        = ?surface        :: SurfaceKHR
-type HasGraphicsResources = ( HasQueues
-                            , HasQueueFamilyIndices
-                            , HasSwapchainSupport
+type HasPhysicalDeviceRelated = ( HasPhysicalDevice
+                                , HasQueueFamilyIndices
+                                , HasSwapchainSupport
+                                )
+
+type HasGLFW             = ?glfw             :: GLFWToken
+type HasWindow           = ?window           :: GLFW.Window
+type HasInstance         = ?instance         :: Instance
+type HasValidationLayers = ?validationLayers :: Vector ByteString
+type HasDevice           = ?device           :: Device
+type HasSurface          = ?surface          :: SurfaceKHR
+type HasGraphicsResources = ( HasGLFW
                             , HasWindow
                             , HasInstance
-                            , HasPhysicalDevice
+                            , HasValidationLayers
                             , HasDevice
                             , HasSurface
+                            , HasQueues
+                            , HasPhysicalDeviceRelated
                             )
 
 type SyncVector = Sized.Vector MaxFramesInFlight
@@ -161,11 +170,11 @@ type HasSyncs = ( HasImageAvailable
 
 type HasCommandPool   = ?commandPool   :: CommandPool
 type HasImageRelateds = ?imageRelateds :: Vector ImageRelated
-type HasVulkanResources = ( HasGraphicsResources
+type HasVulkanResources = ( HasCommandPool
+                          , HasImageRelateds
+                          , HasGraphicsResources
                           , HasSwapchainRelated
                           , HasSyncs
-                          , HasCommandPool
-                          , HasImageRelateds
                           )
 
 type HasApp = ( HasConfig

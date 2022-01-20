@@ -12,8 +12,6 @@ import Data.Foldable (find)
 import Data.List (nub)
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, release, ResIO)
 
-import Data.Constraint (Dict(..))
-
 import Graphics.UI.GLFW qualified as GLFW
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -29,8 +27,8 @@ import Types
 import Utils
 import Shaders (vertPath, fragPath)
 
-withSwapchain :: (HasLogger, HasGraphicsResources) => ResIO (Dict HasSwapchainRelated)
-withSwapchain = do
+initSwapchainRelated :: (HasLogger, HasGraphicsResources) => ResIO (Dict HasSwapchainRelated)
+initSwapchainRelated = do
   scInfo@(SwapchainCreateInfoKHR{imageExtent, imageFormat, imageColorSpace}) <- swapchainCreateInfo
   swapchain <- mkMResource =<< withSwapchainKHR ?device scInfo Nothing allocate
   let ?swapchain = swapchain
@@ -40,14 +38,9 @@ withSwapchain = do
   swapchainExtent <- newIORef imageExtent
   let ?swapchainExtent = swapchainExtent
 
-  renderPass <- mkMResource =<< withGraphicsRenderPass
-  let ?renderPass = renderPass
-
-  graphicsPipelineLayout <- mkMResource =<< withGraphicsPipelineLayout
-  let ?graphicsPipelineLayout = graphicsPipelineLayout
-  graphicsPipeline <- mkMResource =<< withGraphicsPipeline
-  let ?graphicsPipeline = graphicsPipeline
-  logDebug "Created pipeline."
+  Dict <- initGraphicsRenderPass
+  Dict <- initGraphicsPipelineLayout
+  Dict <- initGraphicsPipeline
 
   pure Dict
 
@@ -107,15 +100,17 @@ loadShader path = do
   bytes <- readFileBinary path
   withShaderModule ?device zero{code = bytes} Nothing allocate
 
-withGraphicsPipelineLayout :: HasDevice => ResIO (ReleaseKey, PipelineLayout)
-withGraphicsPipelineLayout = do
+initGraphicsPipelineLayout :: HasDevice => ResIO (Dict HasGraphicsPipelineLayout)
+initGraphicsPipelineLayout = do
   let layoutInfo = zero
-  withPipelineLayout ?device layoutInfo Nothing allocate
+  layout <- mkMResource =<< withPipelineLayout ?device layoutInfo Nothing allocate
+  let ?graphicsPipelineLayout = layout
+  pure Dict
 
-withGraphicsPipeline :: ( HasGraphicsResources, HasRenderPass
+initGraphicsPipeline :: ( HasLogger, HasGraphicsResources, HasRenderPass
                         , HasSwapchainExtent, HasGraphicsPipelineLayout)
-                     => ResIO (ReleaseKey, Pipeline)
-withGraphicsPipeline = do
+                     => ResIO (Dict HasGraphicsPipeline)
+initGraphicsPipeline = do
   extent@Extent2D{width, height} <- readIORef ?swapchainExtent
   let vertexInputState = Just zero
       inputAssemblyState = Just zero{topology = PRIMITIVE_TOPOLOGY_POINT_LIST}
@@ -184,13 +179,17 @@ withGraphicsPipeline = do
   -- We don't need the shader modules anymore after creating the pipeline
   traverse_ @[] release [releaseVert, releaseFrag]
 
-  case pipelines of
-    [pipeline]      -> pure (releasePipelines, pipeline)
+  graphicsPipeline <- case pipelines of
+    [pipeline] -> mkMResource (releasePipelines, pipeline)
     (length -> num) -> throwIO $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
+  let ?graphicsPipeline = graphicsPipeline
 
-withGraphicsRenderPass :: (HasGraphicsResources, HasSwapchainFormat)
-                       => ResIO (ReleaseKey, RenderPass)
-withGraphicsRenderPass = do
+  logDebug "Created pipeline."
+  pure Dict
+
+initGraphicsRenderPass :: (HasLogger, HasGraphicsResources, HasSwapchainFormat)
+                       => ResIO (Dict HasRenderPass)
+initGraphicsRenderPass = do
   let colorAttachment = zero{ format = ?swapchainFormat^.formatL
                             , samples = SAMPLE_COUNT_1_BIT
                             , loadOp = ATTACHMENT_LOAD_OP_CLEAR
@@ -218,4 +217,8 @@ withGraphicsRenderPass = do
                            , dependencies = [dependency]
                            } :: RenderPassCreateInfo '[]
 
-  withRenderPass ?device renderPassInfo Nothing allocate
+  renderPass <- mkMResource =<< withRenderPass ?device renderPassInfo Nothing allocate
+  let ?renderPass = renderPass
+
+  logDebug "Created render pass."
+  pure Dict

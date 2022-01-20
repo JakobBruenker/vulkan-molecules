@@ -28,7 +28,7 @@ import Options.Applicative qualified as Opt
 import System.Environment (getProgName)
 import Control.Applicative (ZipList(..))
 import Control.Monad.Trans.Maybe (runMaybeT, MaybeT)
-import Control.Monad.Trans.Resource (allocate, ReleaseKey, runResourceT, ResIO, MonadResource)
+import Control.Monad.Trans.Resource (allocate, runResourceT, ResIO, MonadResource)
 import Data.Coerce (coerce)
 import Data.Finite (Finite, natToFinite, modulo)
 import Data.Foldable (find)
@@ -37,7 +37,6 @@ import Data.Tuple.Extra (dupe)
 import Foreign (malloc, nullPtr, Storable (peek))
 
 import Data.Vector.Sized qualified as Sized
-import Data.Constraint (Dict(..))
 
 import Graphics.UI.GLFW qualified as GLFW
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -64,7 +63,6 @@ mkConfig (MkOptions{..}) = Dict
         ?fullscreen             = optFullscreen
         ?monitorIndex           = optMonitorIndex
         ?enableValidationLayers = optValidationLayers
-
 
 options :: Parser Options
 options = MkOptions
@@ -111,14 +109,41 @@ main = do
       logError $ display @SomeException e
       exitFailure
 
-withGLFW :: ResIO (ReleaseKey, GLFWToken)
-withGLFW = allocate
-  do liftIO $ ifM GLFW.init do pure UnsafeMkGLFWToken
-                            do throwIO GLFWInitError
-  do const $ liftIO GLFW.terminate
+initGLFW :: HasLogger => ResIO (Dict HasGLFW)
+initGLFW = do
+  (_, glfwToken) <- allocate
+    do liftIO $ ifM GLFW.init do pure UnsafeMkGLFWToken
+                              do throwIO GLFWInitError
+    do const $ liftIO GLFW.terminate
+  let ?glfw = glfwToken
 
-withWindow :: (HasLogger, HasConfig) => GLFWToken -> ResIO (ReleaseKey, GLFW.Window)
-withWindow !_ = do
+  logDebug "Initialized GLFW."
+  pure Dict
+
+initInstance :: (HasLogger, HasValidationLayers) => ResIO (Dict HasInstance)
+initInstance = do
+  unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
+  logDebug "Verified GLFW Vulkan support."
+
+  enabledExtensionNames <- V.fromList <$>
+    do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
+  logDebug $ "Required extensions for GLFW: " <> displayShow enabledExtensionNames
+
+  let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
+      instanceCreateInfo = zero{ applicationInfo
+                               , enabledExtensionNames
+                               , enabledLayerNames = ?validationLayers
+                               }
+
+  (_, inst) <- withInstance instanceCreateInfo Nothing allocate
+  let ?instance = inst
+
+  logDebug "Created instance."
+  pure Dict
+
+initWindow :: (HasLogger, HasConfig, HasGLFW) => ResIO (Dict HasWindow)
+initWindow = do
+  !_ <- pure ?glfw
   monitor <- preview (ix $ fromIntegral ?monitorIndex) . concat <$> liftIO GLFW.getMonitors
   when (?fullscreen && isNothing monitor) $
     logWarn "Couldn't find desired monitor. Using windowed mode."
@@ -126,23 +151,33 @@ withWindow !_ = do
     | ?fullscreen, Just mon <- monitor -> liftIO $ GLFW.getMonitorWorkarea mon
     | otherwise -> pure (0, 0, fromIntegral ?windowWidth, fromIntegral ?windowHeight)
 
-  allocate do traverse_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
-                                            , GLFW.WindowHint'Resizable (not ?fullscreen)
-                                            , GLFW.WindowHint'Decorated (not ?fullscreen)
-                                            , GLFW.WindowHint'Floating ?fullscreen
-                                            ]
-              progName <- getProgName
-              maybeM (throwIO GLFWWindowError)
-                     (\window -> GLFW.setWindowPos window xPos yPos $> window)
-                     (GLFW.createWindow width height progName Nothing Nothing)
-           do GLFW.destroyWindow
+  (_, window) <- allocate
+    do traverse_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
+                                     , GLFW.WindowHint'Resizable (not ?fullscreen)
+                                     , GLFW.WindowHint'Decorated (not ?fullscreen)
+                                     , GLFW.WindowHint'Floating ?fullscreen
+                                     ]
+       progName <- getProgName
+       maybeM (throwIO GLFWWindowError)
+              (\window -> GLFW.setWindowPos window xPos yPos $> window)
+              (GLFW.createWindow width height progName Nothing Nothing)
+    do GLFW.destroyWindow
+  let ?window = window
 
-withWindowSurface :: (HasInstance, HasWindow) => ResIO (ReleaseKey, SurfaceKHR)
-withWindowSurface = allocate
-  do liftIO do surfacePtr <- malloc @SurfaceKHR
-               result <- GLFW.createWindowSurface (instanceHandle ?instance) ?window nullPtr surfacePtr
-               peek =<< catchVk (coerce @Int32 result, surfacePtr)
-  do destroySurfaceKHR ?instance ?? Nothing
+  logDebug "Created window."
+  pure Dict
+
+initSurface :: (HasLogger, HasInstance, HasWindow) => ResIO (Dict HasSurface)
+initSurface = do
+  (_, surface) <- allocate
+    do liftIO do surfacePtr <- malloc @SurfaceKHR
+                 result <- GLFW.createWindowSurface (instanceHandle ?instance) ?window nullPtr surfacePtr
+                 peek =<< catchVk (coerce @Int32 result, surfacePtr)
+    do destroySurfaceKHR ?instance ?? Nothing
+  let ?surface = surface
+
+  logDebug "Created surface."
+  pure Dict
   where
     catchVk = \case
       (SUCCESS, x) -> pure x
@@ -203,20 +238,23 @@ mainLoop = do
   -- Allow queues/buffers to finish their job
   deviceWaitIdleSafe ?device
 
-validationLayers :: HasEnableValidationLayers => ResIO (Vector ByteString)
-validationLayers = fmap V.fromList $ ?enableValidationLayers & bool (pure []) do
-   (_, properties) <- enumerateInstanceLayerProperties
-   case NE.nonEmpty $ filter (not . (properties `hasLayer`)) layers of
-     Nothing          -> pure layers
-     Just unsupported -> throwIO $ VkValidationLayersNotSupported unsupported
+initValidationLayers :: HasEnableValidationLayers => ResIO (Dict HasValidationLayers)
+initValidationLayers = do
+  validationLayers <- fmap V.fromList $ ?enableValidationLayers & bool (pure []) do
+    (_, properties) <- enumerateInstanceLayerProperties
+    case NE.nonEmpty $ filter (not . (properties `hasLayer`)) layers of
+      Nothing          -> pure layers
+      Just unsupported -> throwIO $ VkValidationLayersNotSupported unsupported
+  let ?validationLayers = validationLayers
+  pure Dict
   where
     hasLayer props = V.elem ?? V.map layerName props
     layers = ["VK_LAYER_KHRONOS_validation"]
 
-pickPhysicalDevice :: (HasLogger, HasInstance, HasSurface)
-                   => ResIO (Dict (HasPhysicalDevice, HasSwapchainSupport, HasQueueFamilyIndices))
-pickPhysicalDevice = do
-  enumeratePhysicalDevices ?instance >>= do
+initPhysicalDevice :: (HasLogger, HasInstance, HasSurface)
+                   => ResIO (Dict HasPhysicalDeviceRelated)
+initPhysicalDevice = do
+  dict <- enumeratePhysicalDevices ?instance >>= do
     snd >>> toList >>> NE.nonEmpty >>> maybe
       do throwIO VkNoPhysicalDevicesError
       \(toList -> physDevs) -> do
@@ -231,6 +269,9 @@ pickPhysicalDevice = do
               Dict <- querySwapchainSupport
               Dict <- findQueueFamilies
               (Dict,) <$> score
+
+  logDebug "Picked device."
+  pure dict
   where
     score :: (MonadIO m, HasPhysicalDevice) => m Integer
     score = (bool 1000 0 . (PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType <$>) $
@@ -272,6 +313,31 @@ pickPhysicalDevice = do
           ?swapchainPresentModes = swapchainPresentModes
       pure Dict
 
+initDevice :: (HasLogger, HasPhysicalDeviceRelated, HasValidationLayers)
+           => ResIO (Dict HasDevice)
+initDevice = do
+  let queueCreateInfos = V.fromList (nub [?graphicsQueueFamily, ?presentQueueFamily]) <&>
+        \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1]}
+      deviceCreateInfo = zero{ queueCreateInfos
+                             , enabledLayerNames = ?validationLayers
+                             , enabledExtensionNames = deviceExtensions
+                             }
+  (_, device) <- withDevice ?physicalDevice deviceCreateInfo Nothing allocate
+  let ?device = device
+
+  logDebug "Created logical device."
+  pure Dict
+
+initQueues :: (HasLogger, HasDevice, HasQueueFamilyIndices) => ResIO (Dict HasQueues)
+initQueues = do
+  (graphicsQueue, presentQueue) <-
+    join bitraverse (getDeviceQueue ?device ?? 0) (?graphicsQueueFamily, ?presentQueueFamily)
+  let ?graphicsQueue = graphicsQueue
+      ?presentQueue  = presentQueue
+
+  logDebug "Obtained device queues."
+  pure Dict
+
 deviceExtensions :: Vector ByteString
 deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
@@ -295,13 +361,17 @@ setupCommands = do
         cmdDraw commandBuffer 3 1 0 0
   logDebug "Set up commands."
 
-constructImageRelateds :: (HasDevice, HasSwapchainRelated, HasCommandPool)
-                       => ResIO (Vector ImageRelated)
-constructImageRelateds = do
+initImageRelateds :: (HasLogger, HasDevice, HasSwapchainRelated, HasCommandPool)
+                  => ResIO (Dict HasImageRelateds)
+initImageRelateds = do
   swapchain <- readRes ?swapchain
   (_, images) <- getSwapchainImagesKHR ?device swapchain
   commandBuffers <- (constructCommandBuffers . fromIntegral . length) images
-  V.zipWithM constructImageRelated images commandBuffers
+  imageRelateds <- V.zipWithM constructImageRelated images commandBuffers
+  let ?imageRelateds = imageRelateds
+
+  logDebug "Created images."
+  pure Dict
 
 constructCommandBuffers :: (HasDevice, HasCommandPool) => Natural -> ResIO (Vector CommandBuffer)
 constructCommandBuffers count = do
@@ -347,74 +417,18 @@ constructFramebuffer imageView = do
                    }
   mkMResource =<< withFramebuffer ?device fbInfo{attachments = [imageView]} Nothing allocate
 
-withGraphicsResources :: (HasLogger, HasConfig) => ResIO (Dict HasGraphicsResources)
-withGraphicsResources = do
-  (_, glfwToken) <- withGLFW
-  logDebug "Initialized GLFW."
-
-  unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
-  logDebug "Verified GLFW Vulkan support."
-
-  enabledExtensionNames <- V.fromList <$>
-    do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
-  logDebug $ "Required extensions for GLFW: " <> displayShow enabledExtensionNames
-
-  enabledLayerNames <- validationLayers
-  let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
-      instanceCreateInfo = zero{applicationInfo, enabledExtensionNames, enabledLayerNames}
-
-  (_, inst  ) <- withInstance instanceCreateInfo Nothing allocate
-  (_, window) <- withWindow glfwToken
-  let ?instance = inst
-      ?window   = window
-  logDebug "Created window."
-
-  (_, surface) <- withWindowSurface
-  let ?surface = surface
-  logDebug "Created surface."
-
-  Dict <- pickPhysicalDevice
-  logDebug "Picked device."
-
-  let queueCreateInfos = V.fromList (nub [?graphicsQueueFamily, ?presentQueueFamily]) <&>
-        \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1]}
-      deviceCreateInfo = zero{ queueCreateInfos
-                             , enabledLayerNames
-                             , enabledExtensionNames = deviceExtensions
-                             }
-  (_, device) <- withDevice ?physicalDevice deviceCreateInfo Nothing allocate
-  let ?device = device
-  logDebug "Created logical device."
-
-  (graphicsQueue, presentQueue) <-
-    join bitraverse (getDeviceQueue device ?? 0) (?graphicsQueueFamily, ?presentQueueFamily)
-  let ?graphicsQueue = graphicsQueue
-      ?presentQueue  = presentQueue
-  logDebug "Obtained device queues."
-
-  pure Dict
-
-runApp :: (HasLogger, HasConfig) => IO ()
-runApp = runResourceT do
-  liftIO compileAllShaders
-  logDebug "Compiled shaders."
-
-  logDebug "Started boxticle."
-
-  Dict <- withGraphicsResources
-
-  Dict <- withSwapchain
-
+initCommandPool :: (HasLogger, HasDevice, HasGraphicsQueueFamily) => ResIO (Dict HasCommandPool)
+initCommandPool = do
   let commandPoolInfo = zero{ queueFamilyIndex = ?graphicsQueueFamily
                             } :: CommandPoolCreateInfo
   (_, commandPool) <- withCommandPool ?device commandPoolInfo Nothing allocate
   let ?commandPool = commandPool
+
   logDebug "Created command pool."
+  pure Dict
 
-  imageRelateds <- constructImageRelateds
-  let ?imageRelateds = imageRelateds
-  logDebug "Created buffers."
-
+initSyncs :: (HasLogger, HasDevice) => ResIO (Dict HasSyncs)
+initSyncs = do
   (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
     snd <$> withSemaphore ?device zero Nothing allocate
   inFlight <- Sized.replicateM $
@@ -422,7 +436,32 @@ runApp = runResourceT do
   let ?imageAvailable = imageAvailable
       ?renderFinished = renderFinished
       ?inFlight       = inFlight
+
   logDebug "Created syncs."
+  pure Dict
+
+initializeVulkan :: (HasLogger, HasConfig) => ResIO (Dict HasVulkanResources)
+initializeVulkan = do
+  Dict <- initGLFW
+  Dict <- initValidationLayers
+  Dict <- initWindow
+  Dict <- initInstance
+  Dict <- initSurface
+  Dict <- initPhysicalDevice
+  Dict <- initDevice
+  Dict <- initQueues
+  Dict <- initSwapchainRelated
+  Dict <- initCommandPool
+  Dict <- initImageRelateds
+  Dict <- initSyncs
+  pure Dict
+
+runApp :: (HasLogger, HasConfig) => IO ()
+runApp = runResourceT do
+  liftIO compileAllShaders
+  logDebug "Compiled shaders."
+
+  Dict <- initializeVulkan
 
   lift $ setupCommands *> mainLoop
 
