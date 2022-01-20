@@ -26,8 +26,17 @@ mkMResource = newIORef . uncurry MkResource
 viewRef :: (MonadReader s m, MonadIO m) => Getting (IORef a) s (IORef a) -> m a
 viewRef l = readIORef =<< view l
 
-viewRes :: (MonadIO m, MonadReader s m) => Getting (MResource a) s (MResource a) -> m a
-viewRes l = view resourceL <$> (readIORef =<< view l)
+readRes :: MonadIO m => MResource a -> m a
+readRes = fmap (view resourceL) . readIORef
 
-(^->) :: MonadIO m => IORef s -> Getting a s a -> m a
-x^->l = view l <$> readIORef x
+logDebug :: (HasLogger, MonadIO m) => Utf8Builder -> m ()
+logDebug = flip runReaderT ?logFunc . RIO.logDebug
+
+logInfo :: (HasLogger, MonadIO m) => Utf8Builder -> m ()
+logInfo = flip runReaderT ?logFunc . RIO.logInfo
+
+logWarn :: (HasLogger, MonadIO m) => Utf8Builder -> m ()
+logWarn = flip runReaderT ?logFunc . RIO.logWarn
+
+logError :: (HasLogger, MonadIO m) => Utf8Builder -> m ()
+logError = flip runReaderT ?logFunc . RIO.logError

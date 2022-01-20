@@ -2,7 +2,7 @@
 
 module Swapchain where
 
-import RIO
+import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.Vector qualified as V
 import RIO.NonEmpty qualified as NE
 
@@ -10,8 +10,9 @@ import Control.Lens (both)
 import Data.Bits ((.|.))
 import Data.Foldable (find)
 import Data.List (nub)
-import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
-import Control.Monad.Trans.Resource (allocate, ReleaseKey, release)
+import Control.Monad.Trans.Resource (allocate, ReleaseKey, release, ResIO)
+
+import Data.Constraint (Dict(..))
 
 import Graphics.UI.GLFW qualified as GLFW
 
@@ -22,46 +23,44 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , DisplayPropertiesKHR(display)
                      )
 import Vulkan.Zero
+import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 
 import Types
 import Utils
 import Shaders (vertPath, fragPath)
 
-withSwapchain :: (MonadRR env m, HasLogFunc env, HasGraphicsResources env)
-              => m SwapchainRelated
+withSwapchain :: (HasLogger, HasGraphicsResources) => ResIO (Dict HasSwapchainRelated)
 withSwapchain = do
-  device <- view deviceL
   scInfo@(SwapchainCreateInfoKHR{imageExtent, imageFormat, imageColorSpace}) <- swapchainCreateInfo
-  swapchain <- mkMResource =<< withSwapchainKHR device scInfo Nothing allocate
+  swapchain <- mkMResource =<< withSwapchainKHR ?device scInfo Nothing allocate
+  let ?swapchain = swapchain
   logDebug "Created swapchain."
 
-  let swapchainFormat = SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace}
+  let ?swapchainFormat = SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace}
   swapchainExtent <- newIORef imageExtent
+  let ?swapchainExtent = swapchainExtent
 
-  renderPass <- mkMResource =<< withGraphicsRenderPass imageFormat
+  renderPass <- mkMResource =<< withGraphicsRenderPass
+  let ?renderPass = renderPass
+
   graphicsPipelineLayout <- mkMResource =<< withGraphicsPipelineLayout
-  graphicsPipeline <- mkMResource =<< join do
-    liftA3 withGraphicsPipeline do renderPass^->resourceL
-                                do readIORef swapchainExtent
-                                do graphicsPipelineLayout^->resourceL
+  let ?graphicsPipelineLayout = graphicsPipelineLayout
+  graphicsPipeline <- mkMResource =<< withGraphicsPipeline
+  let ?graphicsPipeline = graphicsPipeline
   logDebug "Created pipeline."
 
-  pure $ MkSwapchainRelated{..}
+  pure Dict
 
-swapchainCreateInfo :: (MonadRR env m, HasLogFunc env, HasGraphicsResources env)
-                    => m (SwapchainCreateInfoKHR '[])
+swapchainCreateInfo :: (HasLogger, HasGraphicsResources) => ResIO (SwapchainCreateInfoKHR '[])
 swapchainCreateInfo = do
-  surface <- view surfaceL
-  window <- view windowL
-  SurfaceCapabilitiesKHR{ currentExtent, currentTransform
-                        , minImageExtent, maxImageExtent
-                        , minImageCount, maxImageCount
-                        } <- view swapchainCapabilitiesL
-  SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} <- liftA2 fromMaybe NE.head
-    (find (== SurfaceFormatKHR FORMAT_R8G8B8A8_SRGB COLOR_SPACE_SRGB_NONLINEAR_KHR))
-    <$> view swapchainFormatsL
-  presentModes <- view swapchainPresentModesL
-  queueFamilyIndices <- V.fromList . nub <$> traverse view [graphicsQueueFamilyL, presentQueueFamilyL]
+  let SurfaceCapabilitiesKHR{ currentExtent, currentTransform
+                            , minImageExtent, maxImageExtent
+                            , minImageCount, maxImageCount
+                            } = ?swapchainCapabilities
+      SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} = liftA2 fromMaybe NE.head
+        (find (== SurfaceFormatKHR FORMAT_R8G8B8A8_SRGB COLOR_SPACE_SRGB_NONLINEAR_KHR))
+        ?swapchainFormats
+      queueFamilyIndices = V.fromList $ nub [?graphicsQueueFamily, ?presentQueueFamily]
 
   imageExtent <- do
     let Extent2D{width = currentWidth} = currentExtent
@@ -69,7 +68,7 @@ swapchainCreateInfo = do
         Extent2D{width = maxWidth, height = maxHeight} = maxImageExtent
     if | currentWidth /= maxBound -> pure currentExtent
        | otherwise -> do
-           (fbWidth, fbHeight) <- over both fromIntegral <$> liftIO (GLFW.getFramebufferSize window)
+           (fbWidth, fbHeight) <- over both fromIntegral <$> liftIO (GLFW.getFramebufferSize ?window)
            let width = clamp (minWidth, maxWidth) fbWidth
                height = clamp (minHeight, maxHeight) fbHeight
            pure Extent2D{width, height}
@@ -83,11 +82,12 @@ swapchainCreateInfo = do
                                , PRESENT_MODE_FIFO_RELAXED_KHR
                                , PRESENT_MODE_FIFO_KHR
                                ] :: [PresentModeKHR]
-      presentMode = fromMaybe (NE.head presentModes) $ find (`elem` presentModes) presentModesByPriority
+      presentMode = fromMaybe (NE.head ?swapchainPresentModes) $
+        find (`elem` ?swapchainPresentModes) presentModesByPriority
 
   logDebug $ "Using " <> displayShow presentMode <> "."
 
-  pure zero{ surface
+  pure zero{ surface = ?surface
            , minImageCount = imageCount
            , imageFormat
            , imageColorSpace
@@ -102,22 +102,21 @@ swapchainCreateInfo = do
            , clipped = True
            }
 
-loadShader :: (MonadRR env m, HasDevice env) => FilePath -> m (ReleaseKey, ShaderModule)
+loadShader :: HasDevice => FilePath -> ResIO (ReleaseKey, ShaderModule)
 loadShader path = do
-  device <- view deviceL
   bytes <- readFileBinary path
-  withShaderModule device zero{code = bytes} Nothing allocate
+  withShaderModule ?device zero{code = bytes} Nothing allocate
 
-withGraphicsPipelineLayout :: (MonadRR env m, HasDevice env) => m (ReleaseKey, PipelineLayout)
+withGraphicsPipelineLayout :: HasDevice => ResIO (ReleaseKey, PipelineLayout)
 withGraphicsPipelineLayout = do
-  device <- view deviceL
   let layoutInfo = zero
-  withPipelineLayout device layoutInfo Nothing allocate
+  withPipelineLayout ?device layoutInfo Nothing allocate
 
-withGraphicsPipeline :: (MonadRR env m, HasGraphicsResources env)
-                     => RenderPass -> Extent2D -> PipelineLayout -> m (ReleaseKey, Pipeline)
-withGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
-  device <- view deviceL
+withGraphicsPipeline :: ( HasGraphicsResources, HasRenderPass
+                        , HasSwapchainExtent, HasGraphicsPipelineLayout)
+                     => ResIO (ReleaseKey, Pipeline)
+withGraphicsPipeline = do
+  extent@Extent2D{width, height} <- readIORef ?swapchainExtent
   let vertexInputState = Just zero
       inputAssemblyState = Just zero{topology = PRIMITIVE_TOPOLOGY_POINT_LIST}
       viewport = zero{ width = fromIntegral width
@@ -156,6 +155,8 @@ withGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
   (releaseVert, vertModule) <- loadShader vertPath
   (releaseFrag, fragModule) <- loadShader fragPath
 
+  renderPass <- readRes ?renderPass
+  layout <- readRes ?graphicsPipelineLayout
   let vertShaderStageInfo = zero{ stage = SHADER_STAGE_VERTEX_BIT
                                 , module' = vertModule
                                 , name = "main"
@@ -178,7 +179,7 @@ withGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
                                            }
 
   (releasePipelines, (_, pipelines)) <-
-    withGraphicsPipelines device zero pipelineInfo Nothing allocate
+    withGraphicsPipelines ?device zero pipelineInfo Nothing allocate
 
   -- We don't need the shader modules anymore after creating the pipeline
   traverse_ @[] release [releaseVert, releaseFrag]
@@ -187,11 +188,10 @@ withGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
     [pipeline]      -> pure (releasePipelines, pipeline)
     (length -> num) -> throwIO $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
 
-withGraphicsRenderPass :: (MonadRR env m, HasGraphicsResources env)
-                       => Format -> m (ReleaseKey, RenderPass)
-withGraphicsRenderPass format = do
-  device <- view deviceL
-  let colorAttachment = zero{ format
+withGraphicsRenderPass :: (HasGraphicsResources, HasSwapchainFormat)
+                       => ResIO (ReleaseKey, RenderPass)
+withGraphicsRenderPass = do
+  let colorAttachment = zero{ format = ?swapchainFormat^.formatL
                             , samples = SAMPLE_COUNT_1_BIT
                             , loadOp = ATTACHMENT_LOAD_OP_CLEAR
                             , storeOp = ATTACHMENT_STORE_OP_STORE
@@ -218,4 +218,4 @@ withGraphicsRenderPass format = do
                            , dependencies = [dependency]
                            } :: RenderPassCreateInfo '[]
 
-  withRenderPass device renderPassInfo Nothing allocate
+  withRenderPass ?device renderPassInfo Nothing allocate

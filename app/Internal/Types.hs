@@ -14,7 +14,7 @@ import Vulkan hiding (Display)
 
 import TH
 import Graphics.UI.GLFW qualified as GLFW
-import Control.Monad.Trans.Resource (ReleaseKey, MonadResource)
+import Control.Monad.Trans.Resource (ReleaseKey)
 
 type MaxFramesInFlight = 2
 
@@ -81,80 +81,94 @@ data ImageRelated = MkImageRelated { image         :: IORef Image
                                    }
 makeRegularClassy ''ImageRelated
 
-data WindowSize = MkWindowSize { windowWidth  :: Natural
-                               , windowHeight :: Natural
-                               }
-makeRioClassy ''WindowSize
+makeRegularClassy ''SurfaceFormatKHR
 
-data Config = MkConfig { windowSize             :: WindowSize
-                       , fullscreen             :: Bool
-                       , monitorIndex           :: Natural
-                       , enableValidationLayers :: Bool
-                       }
-makeRioClassy ''Config
+type HasLogger = ?logFunc :: LogFunc
 
-data App = MkApp { logFunc :: LogFunc
-                 , config  :: Config
-                 }
-makeRioClassy ''App
+type HasWindowWidth  = ?windowWidth  :: Natural
+type HasWindowHeight = ?windowHeight :: Natural
+type HasWindowSize = ( HasWindowWidth
+                     , HasWindowHeight
+                     )
 
-data Queues = MkQueues { graphicsQueue :: Queue
-                       , presentQueue  :: Queue
-                       }
-makeRioClassy ''Queues
+type HasFullscreen             = ?fullscreen             :: Bool
+type HasMonitorIndex           = ?monitorIndex           :: Natural
+type HasEnableValidationLayers = ?enableValidationLayers :: Bool
+type HasConfig = ( HasWindowSize
+                 , HasFullscreen
+                 , HasMonitorIndex
+                 , HasEnableValidationLayers
+                 )
 
-data SwapchainRelated = MkSwapchainRelated { swapchainFormat        :: SurfaceFormatKHR
-                                           , swapchainExtent        :: IORef Extent2D
-                                           , swapchain              :: MResource SwapchainKHR
-                                           , renderPass             :: MResource RenderPass
-                                           , graphicsPipelineLayout :: MResource PipelineLayout
-                                           , graphicsPipeline       :: MResource Pipeline
-                                           }
-makeRioClassy ''SwapchainRelated
+type HasGraphicsQueue = ?graphicsQueue :: Queue
+type HasPresentQueue  = ?presentQueue :: Queue
+type HasQueues = ( HasGraphicsQueue
+                 , HasPresentQueue
+                 )
 
-data QueueFamilyIndices = MkQueueFamilyIndices { graphicsQueueFamily :: Word32
-                                               , presentQueueFamily  :: Word32
-                                               }
-makeRioClassy ''QueueFamilyIndices
+type HasSwapchainFormat        = ?swapchainFormat        :: SurfaceFormatKHR
+type HasSwapchainExtent        = ?swapchainExtent        :: IORef Extent2D
+type HasSwapchain              = ?swapchain              :: MResource SwapchainKHR
+type HasRenderPass             = ?renderPass             :: MResource RenderPass
+type HasGraphicsPipelineLayout = ?graphicsPipelineLayout :: MResource PipelineLayout
+type HasGraphicsPipeline       = ?graphicsPipeline      :: MResource Pipeline
+type HasSwapchainRelated = ( HasSwapchainFormat
+                           , HasSwapchainExtent
+                           , HasSwapchain
+                           , HasRenderPass
+                           , HasGraphicsPipelineLayout
+                           , HasGraphicsPipeline
+                           )
 
-data SwapchainSupport = MkSwapchainSupport { swapchainCapabilities :: SurfaceCapabilitiesKHR
-                                           , swapchainFormats      :: NonEmpty SurfaceFormatKHR
-                                           , swapchainPresentModes :: NonEmpty PresentModeKHR
-                                           }
-makeRioClassy ''SwapchainSupport
+type HasGraphicsQueueFamily = ?graphicsQueueFamily :: Word32
+type HasPresentQueueFamily  = ?presentQueueFamily  :: Word32
+type HasQueueFamilyIndices = ( HasGraphicsQueueFamily
+                             , HasPresentQueueFamily
+                             )
 
-data GraphicsResources = MkGraphicsResources { window             :: GLFW.Window
-                                             , inst               :: Instance
-                                             , device             :: Device
-                                             , queues             :: Queues
-                                             , queueFamilyIndices :: QueueFamilyIndices
-                                             , surface            :: SurfaceKHR
-                                             , swapchainSupport   :: SwapchainSupport
-                                             }
-makeRioClassy ''GraphicsResources
+type HasSwapchainCapabilities = ?swapchainCapabilities :: SurfaceCapabilitiesKHR
+type HasSwapchainFormats      = ?swapchainFormats      :: NonEmpty SurfaceFormatKHR
+type HasSwapchainPresentModes = ?swapchainPresentModes :: NonEmpty PresentModeKHR
+type HasSwapchainSupport = ( HasSwapchainCapabilities
+                           , HasSwapchainFormats
+                           , HasSwapchainPresentModes
+                           )
+
+type HasWindow         = ?window         :: GLFW.Window
+type HasInstance       = ?instance       :: Instance
+type HasPhysicalDevice = ?physicalDevice :: PhysicalDevice
+type HasDevice         = ?device         :: Device
+type HasSurface        = ?surface        :: SurfaceKHR
+type HasGraphicsResources = ( HasQueues
+                            , HasQueueFamilyIndices
+                            , HasSwapchainSupport
+                            , HasWindow
+                            , HasInstance
+                            , HasPhysicalDevice
+                            , HasDevice
+                            , HasSurface
+                            )
 
 type SyncVector = Sized.Vector MaxFramesInFlight
-data Syncs = MkSyncs { imageAvailable :: SyncVector Semaphore
-                     , renderFinished :: SyncVector Semaphore
-                     , inFlight       :: SyncVector Fence
-                     }
-makeRioClassy ''Syncs
 
-data GraphicsApp = MkGraphicsApp { app :: App
-                                 , graphicsResources :: GraphicsResources
-                                 }
-makeRioClassy ''GraphicsApp
+type HasImageAvailable = ?imageAvailable :: SyncVector Semaphore
+type HasRenderFinished = ?renderFinished :: SyncVector Semaphore
+type HasInFlight       = ?inFlight       :: SyncVector Fence
+type HasSyncs = ( HasImageAvailable
+                , HasRenderFinished
+                , HasInFlight
+                )
 
-data SwapchainApp = MkSwapchainApp { graphicsApp      :: GraphicsApp
-                                   , swapchainRelated :: SwapchainRelated
-                                   , commandPool      :: CommandPool
-                                   }
-makeRioClassy ''SwapchainApp
+type HasCommandPool   = ?commandPool   :: CommandPool
+type HasImageRelateds = ?imageRelateds :: Vector ImageRelated
+type HasVulkanResources = ( HasGraphicsResources
+                          , HasSwapchainRelated
+                          , HasSyncs
+                          , HasCommandPool
+                          , HasImageRelateds
+                          )
 
-data Boxticle = MkBoxticle { swapchainApp      :: SwapchainApp
-                           , imageRelateds     :: Vector ImageRelated
-                           , syncs             :: Syncs
-                           }
-makeRioClassy ''Boxticle
-
-type MonadRR env m = (MonadResource m, MonadReader env m)
+type HasApp = ( HasConfig
+              , HasLogger
+              , HasVulkanResources
+              )

@@ -47,6 +47,7 @@ executable boxticle
                       , finite-typelits ^>= 0.1.4.2
                       , fir ^>= 0.0.1.0
                       , resourcet ^>= 1.2.4.3
+                      , constraints ^>= 0.13.2
     hs-source-dirs:     app
     default-language:   Haskell2010
     ghc-options:        -Wall
@@ -78,6 +79,7 @@ executable boxticle
                         FunctionalDependencies,
                         GADTs,
                         InstanceSigs,
+                        ImplicitParams,
                         ImportQualifiedPost,
                         KindSignatures,
                         LambdaCase,
