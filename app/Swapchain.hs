@@ -33,6 +33,7 @@ withSwapchain = do
   device <- view deviceL
   scInfo@(SwapchainCreateInfoKHR{imageExtent, imageFormat, imageColorSpace}) <- swapchainCreateInfo
   swapchain <- mkMResource =<< withSwapchainKHR device scInfo Nothing allocate
+  logDebug "Created swapchain."
 
   let swapchainFormat = SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace}
   swapchainExtent <- newIORef imageExtent
@@ -43,6 +44,7 @@ withSwapchain = do
     liftA3 withGraphicsPipeline do renderPass^->resourceL
                                 do readIORef swapchainExtent
                                 do graphicsPipelineLayout^->resourceL
+  logDebug "Created pipeline."
 
   pure $ MkSwapchainRelated{..}
 

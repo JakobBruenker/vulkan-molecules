@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedLists #-}
 
-module Main where
+module Main (main) where
 
 import RIO
 import RIO.ByteString qualified as B
@@ -105,11 +105,11 @@ main = evalContT do
 
 withGLFW :: MonadResource m => m (ReleaseKey, GLFWToken)
 withGLFW = allocate
-  do liftIO $ ifM GLFW.init (pure UnsafeMkGLFWToken)
-                            (throwIO GLFWInitError)
+  do liftIO $ ifM GLFW.init do pure UnsafeMkGLFWToken
+                            do throwIO GLFWInitError
   do const $ liftIO GLFW.terminate
 
-withWindow :: (MonadReader env m, HasApp env, MonadResource m)
+withWindow :: (MonadRR env m, HasApp env)
            => GLFWToken -> m (ReleaseKey, GLFW.Window)
 withWindow !_ = do
   fullscreen <- view fullscreenL
@@ -284,41 +284,6 @@ deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
   ]
 
-withImageFences :: MonadResource m => Vector image -> m (Vector (image, IORef (Maybe Fence)))
-withImageFences = traverse \image -> (image,) <$> newIORef Nothing
-
-withImageViews :: MonadResource m
-               => Device -> Format -> Vector (IORef Image, fence)
-               -> m (Vector (IORef Image, fence, MResource ImageView))
-withImageViews device format =
-  traverse \(imageRef, fence) -> do
-    image <- readIORef imageRef
-    imageView <- mkMResource =<< withImageView device ivInfo{image} Nothing allocate
-    pure (imageRef, fence, imageView)
-  where
-    ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
-                 , format
-                 , subresourceRange
-                 }
-    subresourceRange = zero{ aspectMask = IMAGE_ASPECT_COLOR_BIT
-                           , levelCount = 1
-                           , layerCount = 1
-                           }
-
-withFramebuffers :: MonadResource m
-                 => Device -> Extent2D -> RenderPass -> Vector (image, fence, MResource ImageView)
-                 -> m (Vector (image, fence, MResource ImageView, MResource Framebuffer))
-withFramebuffers device Extent2D{width, height} renderPass images = do
-  let fbInfo = zero{ renderPass
-                   , width
-                   , height
-                   , layers = 1
-                   }
-
-  for images \(image, fence, imageViewRes) -> (image, fence, imageViewRes,) <$> do
-    imageView <- imageViewRes^->resourceL
-    mkMResource =<< withFramebuffer device fbInfo{attachments = [imageView]} Nothing allocate
-
 setupCommands :: HasBoxticle env => RIO env ()
 setupCommands = do
   view imageRelatedsL >>= traverse_ \MkImageRelated{commandBuffer, framebuffer = framebufferRes} ->
@@ -337,7 +302,69 @@ setupCommands = do
         cmdDraw commandBuffer 3 1 0 0
   logDebug "Set up commands."
 
-withGraphicsResources :: (MonadResource m, MonadReader env m, HasApp env)
+constructImageRelateds :: (MonadRR env m, HasSwapchainApp env)
+                       => m (Vector ImageRelated)
+constructImageRelateds = do
+  device <- view deviceL
+  swapchain <- viewRes swapchainL
+  (_, images) <- getSwapchainImagesKHR device swapchain
+  commandBuffers <- (constructCommandBuffers . fromIntegral . length) images
+  V.zipWithM constructImageRelated images commandBuffers
+
+constructCommandBuffers :: (MonadRR env m, HasSwapchainApp env)
+                        => Natural -> m (Vector CommandBuffer)
+constructCommandBuffers count = do
+  device <- view deviceL
+  commandPool <- view commandPoolL
+  let commandBuffersInfo = zero{ commandPool
+                               , level = COMMAND_BUFFER_LEVEL_PRIMARY
+                               , commandBufferCount = fromIntegral count
+                               }
+  snd <$> withCommandBuffers device commandBuffersInfo allocate
+
+constructImageRelated :: (MonadRR env m, HasSwapchainApp env)
+                      => Image -> CommandBuffer -> m ImageRelated
+constructImageRelated img commandBuffer = do
+  image          <- newIORef img
+  imageInFlight  <- constructImageInFlight
+  imageView      <- constructImageView img
+  framebuffer    <- constructFramebuffer =<< imageView^->resourceL
+  pure MkImageRelated{..}
+
+constructImageInFlight :: MonadIO m => m (IORef (Maybe Fence))
+constructImageInFlight = newIORef Nothing
+
+constructImageView :: (MonadRR env m, HasSwapchainApp env)
+                   => Image -> m (MResource ImageView)
+constructImageView image = do
+  device <- view deviceL
+  SurfaceFormatKHR{format} <- view swapchainFormatL
+
+  let ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
+                   , format
+                   , subresourceRange
+                   }
+      subresourceRange = zero{ aspectMask = IMAGE_ASPECT_COLOR_BIT
+                             , levelCount = 1
+                             , layerCount = 1
+                             }
+
+  mkMResource =<< withImageView device ivInfo{image} Nothing allocate
+
+constructFramebuffer :: (MonadRR env m, HasSwapchainApp env)
+                     => ImageView -> m (MResource Framebuffer)
+constructFramebuffer imageView = do
+  device <- view deviceL
+  renderPass <- viewRes renderPassL
+  Extent2D{width, height} <- viewRef swapchainExtentL
+  let fbInfo = zero{ renderPass
+                   , width
+                   , height
+                   , layers = 1
+                   }
+  mkMResource =<< withFramebuffer device fbInfo{attachments = [imageView]} Nothing allocate
+
+withGraphicsResources :: (MonadRR env m, HasApp env)
                       => m GraphicsResources
 withGraphicsResources = do
   (_, glfwToken) <- withGLFW
@@ -393,7 +420,6 @@ runApp = runResourceT do
   let graphicsApp = MkGraphicsApp{..}
 
   swapchainRelated <- runReaderT withSwapchain graphicsApp
-  swapchain <- runReaderT (viewRes swapchainL) swapchainRelated
 
   let device = graphicsResources^.deviceL
       commandPoolInfo = zero{ queueFamilyIndex = graphicsResources^.graphicsQueueFamilyL
@@ -401,24 +427,9 @@ runApp = runResourceT do
   (_, commandPool) <- withCommandPool device commandPoolInfo Nothing allocate
   logDebug "Created command pool."
 
-  images <- traverse newIORef . snd =<< getSwapchainImagesKHR device swapchain
-  imgWithFences <- withImageFences images
+  let swapchainApp = MkSwapchainApp{..}
 
-  let SurfaceFormatKHR{format} = swapchainRelated^.swapchainFormatL
-  imgsWithViews <- withImageViews device format imgWithFences
-
-  swapchainExtent <- readIORef (swapchainRelated^.swapchainExtentL)
-  renderPass <- runReaderT (viewRes renderPassL) swapchainRelated
-  ivsWithFbs <- withFramebuffers device swapchainExtent renderPass imgsWithViews
-
-  let commandBuffersInfo = zero{ commandPool
-                               , level = COMMAND_BUFFER_LEVEL_PRIMARY
-                               , commandBufferCount = fromIntegral $ length ivsWithFbs
-                               }
-  (_, commandBuffers) <- withCommandBuffers device commandBuffersInfo allocate
-  imageRelateds <- V.zipWithM
-        (\(image, imageInFlight, imageView, framebuffer) commandBuffer -> pure MkImageRelated{..})
-        ivsWithFbs commandBuffers
+  imageRelateds <- runReaderT constructImageRelateds swapchainApp
   logDebug "Created buffers."
 
   (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $

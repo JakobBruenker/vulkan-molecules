@@ -145,9 +145,13 @@ data GraphicsApp = MkGraphicsApp { app :: App
                                  }
 makeRioClassy ''GraphicsApp
 
-data Boxticle = MkBoxticle { graphicsApp       :: GraphicsApp
-                           , swapchainRelated  :: SwapchainRelated
-                           , commandPool       :: CommandPool
+data SwapchainApp = MkSwapchainApp { graphicsApp      :: GraphicsApp
+                                   , swapchainRelated :: SwapchainRelated
+                                   , commandPool      :: CommandPool
+                                   }
+makeRioClassy ''SwapchainApp
+
+data Boxticle = MkBoxticle { swapchainApp      :: SwapchainApp
                            , imageRelateds     :: Vector ImageRelated
                            , syncs             :: Syncs
                            }
