@@ -28,6 +28,7 @@ executable boxticle
     other-modules:    Graphics.Mutables
                       Graphics.Initialize
                       VulkanConfig.Shaders
+                      VulkanConfig.Pipeline
                       Utils
                       Options
                       Internal.Types

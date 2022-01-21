@@ -178,10 +178,12 @@ type HasSyncs = ( HasImageAvailable
                 , HasInFlight
                 )
 
-type HasMutables = ?mutables :: MResources Mutables
+type HasMutables                   = ?mutables                   :: MResources Mutables
+type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
 type HasVulkanResources =
   ( HasMutables
   , HasGraphicsResources
+  , HasGraphicsPipelineLayoutInfo
   , HasSyncs
   )
 

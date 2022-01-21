@@ -30,20 +30,23 @@ import Utils
 import VulkanConfig.Shaders (vertPath, fragPath)
 import Data.Tuple.Extra (dupe)
 
-initMutables :: (HasLogger, HasGraphicsResources) => ResIO (Dict HasMutables)
+initMutables :: (HasLogger, HasGraphicsResources, HasGraphicsPipelineLayoutInfo)
+             => ResIO (Dict HasMutables)
 initMutables = do
   mutables <- mkMResources =<< constructMutables
   let ?mutables = mutables
   pure Dict
 
-constructMutables :: (HasLogger, HasGraphicsResources) => ResIO ([ReleaseKey], Mutables)
+constructMutables :: (HasLogger, HasGraphicsResources, HasGraphicsPipelineLayoutInfo)
+                  => ResIO ([ReleaseKey], Mutables)
 constructMutables = do
   scInfo@(SwapchainCreateInfoKHR{ imageExtent = swapchainExtent
                                 , imageFormat = swapchainFormat
                                 })        <- swapchainCreateInfo
   (swapchainKey , swapchain             ) <- constructSwapchain scInfo
   (renderPassKey, renderPass            ) <- constructGraphicsRenderPass swapchainFormat
-  (layoutKey    , graphicsPipelineLayout) <- constructGraphicsPipelineLayout
+  (layoutKey    , graphicsPipelineLayout) <-
+    constructGraphicsPipelineLayout ?graphicsPipelineLayoutInfo
   (pipelineKey  , graphicsPipeline      ) <-
     constructGraphicsPipeline renderPass swapchainExtent graphicsPipelineLayout
   (imageKeys    , imageRelateds         ) <-
@@ -58,13 +61,16 @@ constructSwapchain scInfo = do
   logDebug "Created swapchain."
   pure swapchain
 
-swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources) => m (SwapchainCreateInfoKHR '[])
-swapchainCreateInfo = do
-  -- height and width are 0 if the window is minimized, we wait until that's
-  -- not the case
+waitWhileMinimized :: (HasWindow, MonadIO m) => m ()
+waitWhileMinimized = do
   fix \loop -> do
     dimensions <- liftIO (GLFW.getFramebufferSize ?window)
     when (allOf both (== 0) dimensions) $ liftIO GLFW.waitEvents *> loop
+
+swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources) => m (SwapchainCreateInfoKHR '[])
+swapchainCreateInfo = do
+
+  waitWhileMinimized
 
   SurfaceCapabilitiesKHR{ currentExtent, currentTransform
                         , minImageExtent, maxImageExtent
@@ -120,9 +126,9 @@ loadShader path = do
   bytes <- readFileBinary path
   withShaderModule ?device zero{code = bytes} Nothing allocate
 
-constructGraphicsPipelineLayout :: HasDevice => ResIO (ReleaseKey, PipelineLayout)
-constructGraphicsPipelineLayout = do
-  let layoutInfo = zero
+constructGraphicsPipelineLayout :: HasDevice
+                                => PipelineLayoutCreateInfo -> ResIO (ReleaseKey, PipelineLayout)
+constructGraphicsPipelineLayout layoutInfo = do
   withPipelineLayout ?device layoutInfo Nothing allocate
 
 constructGraphicsPipeline :: ( HasLogger, HasGraphicsResources)
@@ -304,7 +310,8 @@ initSyncs = do
   logDebug "Created syncs."
   pure Dict
 
-recreateSwapchain :: ResIO () -> (HasLogger, HasVulkanResources) => ResIO ()
+recreateSwapchain :: (HasLogger, HasVulkanResources)
+                  => (HasVulkanResources => ResIO ()) -> ResIO ()
 recreateSwapchain setupCommands = do
   logDebug "Recreating swapchain..."
 

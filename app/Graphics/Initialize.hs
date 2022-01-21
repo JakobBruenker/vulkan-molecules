@@ -240,23 +240,9 @@ initCommandPool = do
   logDebug "Created command pool."
   pure Dict
 
-setupCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
-setupCommands = do
-  MkMutables{imageRelateds, renderPass, swapchainExtent, graphicsPipeline} <- readRes ?mutables
-  for_ imageRelateds \MkImageRelated{commandBuffer, framebuffer} -> do
-    useCommandBuffer commandBuffer zero do
-      let renderPassInfo = zero{ renderPass
-                               , framebuffer
-                               , renderArea = zero{extent = swapchainExtent}
-                               , clearValues = [Color $ Float32 0 0 0 1]
-                               }
-      cmdUseRenderPass commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
-        cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
-        cmdDraw commandBuffer 3 1 0 0
-  logDebug "Set up commands."
-
-initializeVulkan :: (HasLogger, HasConfig) => ResIO (Dict HasVulkanResources)
-initializeVulkan = do
+initializeVulkan :: (HasLogger, HasConfig, HasGraphicsPipelineLayoutInfo)
+                 => (HasVulkanResources => ResIO ()) -> ResIO (Dict HasVulkanResources)
+initializeVulkan setupGraphicsCommands = do
   Dict <- initGLFW
   Dict <- initValidationLayers
   Dict <- initWindow
@@ -268,4 +254,5 @@ initializeVulkan = do
   Dict <- initCommandPool
   Dict <- initMutables
   Dict <- initSyncs
-  pure Dict
+
+  setupGraphicsCommands $> Dict

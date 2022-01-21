@@ -25,6 +25,7 @@ import Vulkan.CStruct.Extends
 import Vulkan.Zero
 
 import VulkanConfig.Shaders
+import VulkanConfig.Pipeline
 import Graphics.Initialize
 import Graphics.Mutables
 import Types
@@ -47,9 +48,10 @@ runApp = runResourceT do
   liftIO compileAllShaders
   logDebug "Compiled shaders."
 
-  Dict <- initializeVulkan
+  let ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
+  Dict <- initializeVulkan setupGraphicsCommands
 
-  setupCommands *> mainLoop
+  mainLoop
 
   logInfo "Goodbye!"
 
@@ -63,7 +65,7 @@ mainLoop = do
       VulkanException ERROR_OUT_OF_DATE_KHR -> pure PleaseRecreate
       ex -> throwIO ex
     resized <- readIORef ?framebufferResized
-    when (resized || shouldRecreate == PleaseRecreate) $ recreateSwapchain setupCommands
+    when (resized || shouldRecreate == PleaseRecreate) $ recreateSwapchain setupGraphicsCommands
     liftIO GLFW.waitEvents
     unlessM ?? loop (currentFrame + 1) $ liftIO $ GLFW.windowShouldClose ?window
 
