@@ -141,9 +141,12 @@ initInstance = do
   logDebug "Created instance."
   pure Dict
 
-initWindow :: (HasLogger, HasConfig, HasGLFW) => ResIO (Dict HasWindow)
+initWindow :: (HasLogger, HasConfig, HasGLFW) => ResIO (Dict (HasWindow, HasFramebufferResized))
 initWindow = do
-  !_ <- pure ?glfw
+  !_ <- pure ?glfw -- making sure GLFW really is initialized
+
+  framebufferResized <- newIORef False
+
   monitor <- preview (ix $ fromIntegral ?monitorIndex) . concat <$> liftIO GLFW.getMonitors
   when (?fullscreen && isNothing monitor) $
     logWarn "Couldn't find desired monitor. Using windowed mode."
@@ -159,11 +162,15 @@ initWindow = do
                                      , GLFW.WindowHint'Floating actuallyFullscreen
                                      ]
        progName <- getProgName
-       maybeM (throwIO GLFWWindowError)
-              (\window -> GLFW.setWindowPos window xPos yPos $> window)
-              (GLFW.createWindow width height progName Nothing Nothing)
+       maybeM do throwIO GLFWWindowError
+              do \window -> do GLFW.setWindowPos window xPos yPos
+                               GLFW.setFramebufferSizeCallback window $ Just \_ _ _ ->
+                                 writeIORef framebufferResized True
+                               pure window
+              do GLFW.createWindow width height progName Nothing Nothing
     do GLFW.destroyWindow
   let ?window = window
+      ?framebufferResized = framebufferResized
 
   logDebug "Created window."
   pure Dict
@@ -185,7 +192,7 @@ initSurface = do
       (SUCCESS, x) -> pure x
       (err    , _) -> throwIO $ VulkanException err
 
-drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ()
+drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecreateSwapchain
 drawFrame currentFrame = do
   MkMutables{swapchain, imageRelateds} <- readRes ?mutables
 
@@ -194,7 +201,7 @@ drawFrame currentFrame = do
 
   _result <- waitForFences ?device [ixSync ?inFlight] True maxBound
 
-  (_, imageIndex) <-
+  (imageResult, imageIndex) <-
     acquireNextImageKHR ?device swapchain maxBound (ixSync ?imageAvailable) NULL_HANDLE
 
   MkImageRelated{commandBuffer, imageInFlight} <- fromMaybeM
@@ -226,7 +233,10 @@ drawFrame currentFrame = do
                                   , imageIndices = [imageIndex]
                                   , results = zero
                                   }
-  void $ queuePresentKHR ?presentQueue presentInfo
+  queueResult <- queuePresentKHR ?presentQueue presentInfo
+
+  pure if | elem @[] SUBOPTIMAL_KHR [imageResult, queueResult] -> PleaseRecreate
+          | otherwise -> Don'tRecreate
 
 mainLoop :: HasApp => ResIO ()
 mainLoop = do
@@ -234,9 +244,11 @@ mainLoop = do
   fix ?? natToFinite (Proxy @0) $ \loop currentFrame -> do
     -- NB: depending on present mode and possibly other factors, the exception
     -- is thrown either by 'acquireNextImageKHR' or by 'queuePresentKHR'
-    drawFrame currentFrame `catch` \case
-      VulkanException ERROR_OUT_OF_DATE_KHR -> recreateSwapchain
+    shouldRecreate <- drawFrame currentFrame `catch` \case
+      VulkanException ERROR_OUT_OF_DATE_KHR -> pure PleaseRecreate
       ex -> throwIO ex
+    resized <- readIORef ?framebufferResized
+    when (resized || shouldRecreate == PleaseRecreate) recreateSwapchain
     liftIO GLFW.waitEvents
     unlessM ?? loop (currentFrame + 1) $ liftIO $ GLFW.windowShouldClose ?window
 

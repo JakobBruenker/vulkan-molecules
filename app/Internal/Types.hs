@@ -64,6 +64,10 @@ data Options = MkOptions { optWidth            :: Natural
 -- abstract type to keep track of whether GLFW is initialized
 data GLFWToken = UnsafeMkGLFWToken
 
+data ShouldRecreateSwapchain = Don'tRecreate
+                             | PleaseRecreate
+                             deriving Eq
+
 -- a collection of resources that must be allocated and released
 data Resources a = MkResource { releaseKeys :: [ReleaseKey]
                               , resources   :: a
@@ -144,15 +148,17 @@ type HasPhysicalDeviceRelated = ( HasPhysicalDevice
                                 , HasSwapchainSupport
                                 )
 
-type HasGLFW             = ?glfw             :: GLFWToken
-type HasWindow           = ?window           :: GLFW.Window
-type HasInstance         = ?instance         :: Instance
-type HasValidationLayers = ?validationLayers :: Vector ByteString
-type HasDevice           = ?device           :: Device
-type HasSurface          = ?surface          :: SurfaceKHR
-type HasCommandPool      = ?commandPool      :: CommandPool
+type HasGLFW               = ?glfw               :: GLFWToken
+type HasWindow             = ?window             :: GLFW.Window
+type HasFramebufferResized = ?framebufferResized :: IORef Bool
+type HasInstance           = ?instance           :: Instance
+type HasValidationLayers   = ?validationLayers   :: Vector ByteString
+type HasDevice             = ?device             :: Device
+type HasSurface            = ?surface            :: SurfaceKHR
+type HasCommandPool        = ?commandPool        :: CommandPool
 type HasGraphicsResources = ( HasGLFW
                             , HasWindow
+                            , HasFramebufferResized
                             , HasInstance
                             , HasValidationLayers
                             , HasDevice

@@ -6,7 +6,7 @@ import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.Vector qualified as V
 import RIO.NonEmpty qualified as NE
 
-import Control.Lens (both)
+import Control.Lens (both, allOf)
 import Data.Bits ((.|.))
 import Data.Foldable (find)
 import Data.List (nub)
@@ -60,6 +60,11 @@ constructSwapchain scInfo = do
 
 swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources) => m (SwapchainCreateInfoKHR '[])
 swapchainCreateInfo = do
+  -- height and width are 0 if the window is minimized, wait until that's not the case
+  fix \loop -> do
+    dimensions <- liftIO (GLFW.getFramebufferSize ?window)
+    when (allOf both (== 0) dimensions) $ liftIO GLFW.waitEvents *> loop
+
   SurfaceCapabilitiesKHR{ currentExtent, currentTransform
                         , minImageExtent, maxImageExtent
                         , minImageCount, maxImageCount
@@ -316,6 +321,8 @@ setupCommands = do
 recreateSwapchain :: (HasLogger, HasVulkanResources) => ResIO ()
 recreateSwapchain = do
   logDebug "Recreating swapchain..."
+
+  writeIORef ?framebufferResized False
 
   deviceWaitIdle ?device
 
