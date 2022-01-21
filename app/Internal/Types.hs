@@ -1,5 +1,3 @@
-{-# LANGUAGE TemplateHaskell #-}
-
 {-# OPTIONS_HADDOCK not-home #-}
 
 module Internal.Types where
@@ -10,12 +8,13 @@ import RIO.Text qualified as T
 
 import Data.Vector.Sized qualified as Sized
 
-import Vulkan hiding (Display)
+import Vulkan hiding ( Display
+                     , Win32KeyedMutexAcquireReleaseInfoNV(releaseKeys)
+                     , Win32KeyedMutexAcquireReleaseInfoKHR(releaseKeys)
+                     )
 
-import TH
 import Graphics.UI.GLFW qualified as GLFW
 import Control.Monad.Trans.Resource (ReleaseKey, release)
-import Data.Coerce (coerce, Coercible)
 
 type MaxFramesInFlight = 2
 
@@ -65,50 +64,28 @@ data Options = MkOptions { optWidth            :: Natural
 -- abstract type to keep track of whether GLFW is initialized
 data GLFWToken = UnsafeMkGLFWToken
 
--- a resource that must be allocated and released
-data Resource f a = MkResource { releaseKey :: f ReleaseKey
-                               , resource   :: a
-                               }
-
--- a mutable resource
-type MResource a = IORef (Resource Identity a)
+-- a collection of resources that must be allocated and released
+data Resources a = MkResource { releaseKeys :: [ReleaseKey]
+                              , resources   :: a
+                              }
 
 -- a collection of mutable resources
-type MResources a = IORef (Resource [] a)
-
-mkMResourceGeneric :: (Coercible key (f ReleaseKey), MonadIO m)
-                   => (key, a) -> m (IORef (Resource f a))
-mkMResourceGeneric = newIORef . uncurry MkResource . coerce
-
-readResGeneric :: MonadIO m => IORef (Resource f a) -> m a
-readResGeneric = fmap resource . readIORef
-
--- | Releases the old resource(s) and registers the new one.
-writeResGeneric :: (Coercible key (f ReleaseKey), Traversable f, MonadIO m)
-                => IORef (Resource f a) -> (key, a) -> m ()
-writeResGeneric res new = do
-  traverse_ release . releaseKey =<< readIORef res
-  writeIORef res . uncurry MkResource $ coerce new
-
-mkMResource :: MonadIO m => (ReleaseKey, a) -> m (MResource a)
-mkMResource = mkMResourceGeneric
-
-readRes :: MonadIO m => MResource a -> m a
-readRes = readResGeneric
-
--- | Releases the old resource and registers the new one.
-writeRes :: MonadIO m => MResource a -> (ReleaseKey, a) -> m ()
-writeRes = writeResGeneric
+type MResources a = IORef (Resources a)
 
 mkMResources :: MonadIO m => ([ReleaseKey], a) -> m (MResources a)
-mkMResources = mkMResourceGeneric
+mkMResources = newIORef . uncurry MkResource
 
-readRess :: MonadIO m => MResources a -> m a
-readRess = readResGeneric
+readRes :: MonadIO m => MResources a -> m a
+readRes = fmap resources . readIORef
 
 -- | Releases the old resources and registers the new one.
-writeRess :: MonadIO m => MResources a -> ([ReleaseKey], a) -> m ()
-writeRess = writeResGeneric
+--
+-- The second argument is an action rather than a value to make sure the
+-- resources can be freed before the action is run.
+writeRes :: MonadIO m => MResources a -> m ([ReleaseKey], a) -> m ()
+writeRes res new = do
+  traverse_ release . releaseKeys =<< readIORef res
+  writeIORef res . uncurry MkResource =<< new
 
 data ImageRelated = MkImageRelated { image         :: Image
                                    , imageInFlight :: IORef (Maybe Fence)
@@ -116,9 +93,15 @@ data ImageRelated = MkImageRelated { image         :: Image
                                    , framebuffer   :: Framebuffer
                                    , commandBuffer :: CommandBuffer
                                    }
-makeRegularClassy ''ImageRelated
 
-makeRegularClassy ''SurfaceFormatKHR
+data Mutables = MkMutables { imageRelateds          :: Vector ImageRelated
+                           , swapchainFormat        :: Format
+                           , swapchainExtent        :: Extent2D
+                           , swapchain              :: SwapchainKHR
+                           , renderPass             :: RenderPass
+                           , graphicsPipelineLayout :: PipelineLayout
+                           , graphicsPipeline       :: Pipeline
+                           }
 
 type HasLogger = ?logFunc :: LogFunc
 
@@ -143,31 +126,15 @@ type HasQueues = ( HasGraphicsQueue
                  , HasPresentQueue
                  )
 
-type HasSwapchainFormat        = ?swapchainFormat        :: SurfaceFormatKHR
-type HasSwapchainExtent        = ?swapchainExtent        :: IORef Extent2D
-type HasSwapchain              = ?swapchain              :: MResource SwapchainKHR
-type HasRenderPass             = ?renderPass             :: MResource RenderPass
-type HasGraphicsPipelineLayout = ?graphicsPipelineLayout :: MResource PipelineLayout
-type HasGraphicsPipeline       = ?graphicsPipeline       :: MResource Pipeline
-type HasSwapchainRelated = ( HasSwapchainFormat
-                           , HasSwapchainExtent
-                           , HasSwapchain
-                           , HasRenderPass
-                           , HasGraphicsPipelineLayout
-                           , HasGraphicsPipeline
-                           )
-
 type HasGraphicsQueueFamily = ?graphicsQueueFamily :: Word32
 type HasPresentQueueFamily  = ?presentQueueFamily  :: Word32
 type HasQueueFamilyIndices = ( HasGraphicsQueueFamily
                              , HasPresentQueueFamily
                              )
 
-type HasSwapchainCapabilities = ?swapchainCapabilities :: SurfaceCapabilitiesKHR
 type HasSwapchainFormats      = ?swapchainFormats      :: NonEmpty SurfaceFormatKHR
 type HasSwapchainPresentModes = ?swapchainPresentModes :: NonEmpty PresentModeKHR
-type HasSwapchainSupport = ( HasSwapchainCapabilities
-                           , HasSwapchainFormats
+type HasSwapchainSupport = ( HasSwapchainFormats
                            , HasSwapchainPresentModes
                            )
 
@@ -183,12 +150,14 @@ type HasInstance         = ?instance         :: Instance
 type HasValidationLayers = ?validationLayers :: Vector ByteString
 type HasDevice           = ?device           :: Device
 type HasSurface          = ?surface          :: SurfaceKHR
+type HasCommandPool      = ?commandPool      :: CommandPool
 type HasGraphicsResources = ( HasGLFW
                             , HasWindow
                             , HasInstance
                             , HasValidationLayers
                             , HasDevice
                             , HasSurface
+                            , HasCommandPool
                             , HasQueues
                             , HasPhysicalDeviceRelated
                             )
@@ -203,18 +172,15 @@ type HasSyncs = ( HasImageAvailable
                 , HasInFlight
                 )
 
-type HasCommandPool              = ?commandPool              :: CommandPool
-type HasImageRelateds            = ?imageRelateds            :: MResources (Vector ImageRelated)
+type HasMutables = ?mutables :: MResources Mutables
 type HasVulkanResources =
-  ( HasCommandPool,
-    HasImageRelateds,
-    HasGraphicsResources,
-    HasSwapchainRelated,
-    HasSyncs
+  ( HasMutables
+  , HasGraphicsResources
+  , HasSyncs
   )
 
 type HasApp =
-  ( HasConfig,
-    HasLogger,
-    HasVulkanResources
+  ( HasConfig
+  , HasLogger
+  , HasVulkanResources
   )

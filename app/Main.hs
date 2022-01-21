@@ -53,7 +53,7 @@ import Internal.Types(GLFWToken(UnsafeMkGLFWToken))
 import Utils
 import Shaders
 import Types
-import Swapchain
+import Mutables
 import Data.List.NonEmpty.Extra (maximumOn1)
 
 mkConfig :: Options -> Dict HasConfig
@@ -187,11 +187,10 @@ initSurface = do
 
 drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ()
 drawFrame currentFrame = do
-  swapchain <- readRes ?swapchain
+  MkMutables{swapchain, imageRelateds} <- readRes ?mutables
 
   let ixSync :: Sized.Vector MaxFramesInFlight a -> a
       ixSync = view $ Sized.ix currentFrame
-  imageRelateds <- readRess ?imageRelateds
 
   _result <- waitForFences ?device [ixSync ?inFlight] True maxBound
 
@@ -317,11 +316,9 @@ initPhysicalDevice = do
     querySwapchainSupport = do
       let formats      = getPhysicalDeviceSurfaceFormatsKHR ?physicalDevice ?surface
           presentModes = getPhysicalDeviceSurfacePresentModesKHR ?physicalDevice ?surface
-      swapchainCapabilities      <- getPhysicalDeviceSurfaceCapabilitiesKHR ?physicalDevice ?surface
       Just swapchainFormats      <- NE.nonEmpty . toList . snd <$> formats
       Just swapchainPresentModes <- NE.nonEmpty . toList . snd <$> presentModes
-      let ?swapchainCapabilities = swapchainCapabilities
-          ?swapchainFormats      = swapchainFormats
+      let ?swapchainFormats      = swapchainFormats
           ?swapchainPresentModes = swapchainPresentModes
       pure Dict
 
@@ -355,23 +352,15 @@ deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
   ]
 
-setupCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
-setupCommands = do
-  imageRelateds <- readRess ?imageRelateds
-  for_ imageRelateds \MkImageRelated{commandBuffer, framebuffer} -> do
-    useCommandBuffer commandBuffer zero do
-      renderPass <- readRes ?renderPass
-      extent <- readIORef ?swapchainExtent
-      graphicsPipeline <- readRes ?graphicsPipeline
-      let renderPassInfo = zero{ renderPass
-                               , framebuffer
-                               , renderArea = zero{extent}
-                               , clearValues = [Color $ Float32 0 0 0 1]
-                               }
-      cmdUseRenderPass commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
-        cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
-        cmdDraw commandBuffer 3 1 0 0
-  logDebug "Set up commands."
+initCommandPool :: (HasLogger, HasDevice, HasGraphicsQueueFamily) => ResIO (Dict HasCommandPool)
+initCommandPool = do
+  let commandPoolInfo = zero{ queueFamilyIndex = ?graphicsQueueFamily
+                            } :: CommandPoolCreateInfo
+  (_, commandPool) <- withCommandPool ?device commandPoolInfo Nothing allocate
+  let ?commandPool = commandPool
+
+  logDebug "Created command pool."
+  pure Dict
 
 initializeVulkan :: (HasLogger, HasConfig) => ResIO (Dict HasVulkanResources)
 initializeVulkan = do
@@ -383,9 +372,8 @@ initializeVulkan = do
   Dict <- initPhysicalDevice
   Dict <- initDevice
   Dict <- initQueues
-  Dict <- initSwapchainRelated
   Dict <- initCommandPool
-  Dict <- initImageRelateds
+  Dict <- initMutables
   Dict <- initSyncs
   pure Dict
 

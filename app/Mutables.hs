@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedLists #-}
 
-module Swapchain where
+module Mutables where
 
 import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.Vector qualified as V
@@ -30,28 +30,26 @@ import Utils
 import Shaders (vertPath, fragPath)
 import Data.Tuple.Extra (dupe)
 
-initSwapchainRelated :: (HasLogger, HasGraphicsResources) => ResIO (Dict HasSwapchainRelated)
-initSwapchainRelated = do
-
-  scInfo@(SwapchainCreateInfoKHR{imageExtent, imageFormat, imageColorSpace}) <- swapchainCreateInfo
-  Dict <- initSwapchain scInfo
-
-  let ?swapchainFormat = SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace}
-  swapchainExtent <- newIORef imageExtent
-  let ?swapchainExtent = swapchainExtent
-
-  Dict <- initGraphicsRenderPass
-  Dict <- initGraphicsPipelineLayout
-  Dict <- initGraphicsPipeline
-
+initMutables :: (HasLogger, HasGraphicsResources) => ResIO (Dict HasMutables)
+initMutables = do
+  mutables <- mkMResources =<< constructMutables
+  let ?mutables = mutables
   pure Dict
 
-initSwapchain :: (HasLogger, HasDevice)
-              => SwapchainCreateInfoKHR '[] -> ResIO (Dict HasSwapchain)
-initSwapchain scInfo = do
-  swapchain <- mkMResource =<< constructSwapchain scInfo
-  let ?swapchain = swapchain
-  pure Dict
+constructMutables :: (HasLogger, HasGraphicsResources) => ResIO ([ReleaseKey], Mutables)
+constructMutables = do
+  scInfo@(SwapchainCreateInfoKHR{ imageExtent = swapchainExtent
+                                , imageFormat = swapchainFormat
+                                })        <- swapchainCreateInfo
+  (swapchainKey , swapchain             ) <- constructSwapchain scInfo
+  (renderPassKey, renderPass            ) <- constructGraphicsRenderPass swapchainFormat
+  (layoutKey    , graphicsPipelineLayout) <- constructGraphicsPipelineLayout
+  (pipelineKey  , graphicsPipeline      ) <-
+    constructGraphicsPipeline renderPass swapchainExtent graphicsPipelineLayout
+  (imageKeys    , imageRelateds         ) <-
+    constructImageRelateds swapchainExtent swapchainFormat renderPass swapchain
+
+  pure ([swapchainKey, renderPassKey, layoutKey, pipelineKey] <> imageKeys, MkMutables{..})
 
 constructSwapchain :: (HasLogger, HasDevice)
                    => SwapchainCreateInfoKHR '[] -> ResIO (ReleaseKey, SwapchainKHR)
@@ -62,11 +60,11 @@ constructSwapchain scInfo = do
 
 swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources) => m (SwapchainCreateInfoKHR '[])
 swapchainCreateInfo = do
-  let SurfaceCapabilitiesKHR{ currentExtent, currentTransform
-                            , minImageExtent, maxImageExtent
-                            , minImageCount, maxImageCount
-                            } = ?swapchainCapabilities
-      SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} = liftA2 fromMaybe NE.head
+  SurfaceCapabilitiesKHR{ currentExtent, currentTransform
+                        , minImageExtent, maxImageExtent
+                        , minImageCount, maxImageCount
+                        } <- getPhysicalDeviceSurfaceCapabilitiesKHR ?physicalDevice ?surface
+  let SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} = liftA2 fromMaybe NE.head
         (find (== SurfaceFormatKHR FORMAT_R8G8B8A8_SRGB COLOR_SPACE_SRGB_NONLINEAR_KHR))
         ?swapchainFormats
       queueFamilyIndices = V.fromList $ nub [?graphicsQueueFamily, ?presentQueueFamily]
@@ -116,30 +114,14 @@ loadShader path = do
   bytes <- readFileBinary path
   withShaderModule ?device zero{code = bytes} Nothing allocate
 
-initGraphicsPipelineLayout :: HasDevice => ResIO (Dict HasGraphicsPipelineLayout)
-initGraphicsPipelineLayout = do
-  layout <- mkMResource =<< constructGraphicsPipelineLayout
-  let ?graphicsPipelineLayout = layout
-  pure Dict
-
 constructGraphicsPipelineLayout :: HasDevice => ResIO (ReleaseKey, PipelineLayout)
 constructGraphicsPipelineLayout = do
   let layoutInfo = zero
   withPipelineLayout ?device layoutInfo Nothing allocate
 
-initGraphicsPipeline :: ( HasLogger, HasGraphicsResources, HasRenderPass
-                        , HasSwapchainExtent, HasGraphicsPipelineLayout)
-                     => ResIO (Dict HasGraphicsPipeline)
-initGraphicsPipeline = do
-  graphicsPipeline <- mkMResource =<< constructGraphicsPipeline
-  let ?graphicsPipeline = graphicsPipeline
-  pure Dict
-
-constructGraphicsPipeline :: ( HasLogger, HasGraphicsResources, HasRenderPass
-                             , HasSwapchainExtent, HasGraphicsPipelineLayout)
-                          => ResIO (ReleaseKey, Pipeline)
-constructGraphicsPipeline = do
-  extent@Extent2D{width, height} <- readIORef ?swapchainExtent
+constructGraphicsPipeline :: ( HasLogger, HasGraphicsResources)
+                          => RenderPass -> Extent2D -> PipelineLayout -> ResIO (ReleaseKey, Pipeline)
+constructGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
   let vertexInputState = Just zero
       inputAssemblyState = Just zero{topology = PRIMITIVE_TOPOLOGY_POINT_LIST}
       viewport = zero{ width = fromIntegral width
@@ -178,8 +160,6 @@ constructGraphicsPipeline = do
   (releaseVert, vertModule) <- loadShader vertPath
   (releaseFrag, fragModule) <- loadShader fragPath
 
-  renderPass <- readRes ?renderPass
-  layout <- readRes ?graphicsPipelineLayout
   let vertShaderStageInfo = zero{ stage = SHADER_STAGE_VERTEX_BIT
                                 , module' = vertModule
                                 , name = "main"
@@ -214,17 +194,10 @@ constructGraphicsPipeline = do
   logDebug "Created pipeline."
   pure graphicsPipeline
 
-initGraphicsRenderPass :: (HasLogger, HasGraphicsResources, HasSwapchainFormat)
-                       => ResIO (Dict HasRenderPass)
-initGraphicsRenderPass = do
-  renderPass <- mkMResource =<< constructGraphicsRenderPass
-  let ?renderPass = renderPass
-  pure Dict
-
-constructGraphicsRenderPass :: (HasLogger, HasGraphicsResources, HasSwapchainFormat)
-                            => ResIO (ReleaseKey, RenderPass)
-constructGraphicsRenderPass = do
-  let colorAttachment = zero{ format = ?swapchainFormat^.formatL
+constructGraphicsRenderPass :: (HasLogger, HasGraphicsResources)
+                            => Format -> ResIO (ReleaseKey, RenderPass)
+constructGraphicsRenderPass format = do
+  let colorAttachment = zero{ format
                             , samples = SAMPLE_COUNT_1_BIT
                             , loadOp = ATTACHMENT_LOAD_OP_CLEAR
                             , storeOp = ATTACHMENT_STORE_OP_STORE
@@ -256,20 +229,14 @@ constructGraphicsRenderPass = do
   logDebug "Created render pass."
   pure renderPass
 
-initImageRelateds :: (HasLogger, HasDevice, HasSwapchainRelated, HasCommandPool)
-                  => ResIO (Dict HasImageRelateds)
-initImageRelateds = do
-  imageRelateds <- mkMResources =<< constructImageRelateds
-  let ?imageRelateds = imageRelateds
-  pure Dict
-
-constructImageRelateds :: (HasLogger, HasDevice, HasSwapchainRelated, HasCommandPool)
-                       => ResIO ([ReleaseKey], Vector ImageRelated)
-constructImageRelateds = do
-  swapchain <- readRes ?swapchain
+constructImageRelateds :: (HasLogger, HasDevice, HasCommandPool)
+                       => Extent2D -> Format -> RenderPass -> SwapchainKHR
+                       -> ResIO ([ReleaseKey], Vector ImageRelated)
+constructImageRelateds extent format renderPass swapchain = do
   (_, images) <- getSwapchainImagesKHR ?device swapchain
   (cmdBufKey, commandBuffers) <- (constructCommandBuffers . fromIntegral . length) images
-  (releaseKeys, imageRelateds) <- V.unzip <$> V.zipWithM constructImageRelated images commandBuffers
+  (releaseKeys, imageRelateds) <- V.unzip <$>
+    V.zipWithM (constructImageRelated extent format renderPass) images commandBuffers
 
   logDebug "Created images."
   pure (cmdBufKey : concat releaseKeys, imageRelateds)
@@ -283,21 +250,22 @@ constructCommandBuffers count = do
                                }
   withCommandBuffers ?device commandBuffersInfo allocate
 
-constructImageRelated :: (HasDevice, HasSwapchainRelated)
-                      => Image -> CommandBuffer -> ResIO ([ReleaseKey], ImageRelated)
-constructImageRelated image commandBuffer = do
+constructImageRelated :: HasDevice
+                      => Extent2D -> Format -> RenderPass -> Image -> CommandBuffer
+                      -> ResIO ([ReleaseKey], ImageRelated)
+constructImageRelated extent format renderPass image commandBuffer = do
   imageInFlight                <- constructImageInFlight
-  (imgViewKey , imageView    ) <- constructImageView image
-  (framebufKey, framebuffer  ) <- constructFramebuffer imageView
+  (imgViewKey , imageView    ) <- constructImageView image format
+  (framebufKey, framebuffer  ) <- constructFramebuffer extent renderPass imageView
   pure ([imgViewKey, framebufKey], MkImageRelated{..})
 
 constructImageInFlight :: MonadIO m => m (IORef (Maybe Fence))
 constructImageInFlight = newIORef Nothing
 
-constructImageView :: (HasDevice, HasSwapchainRelated) => Image -> ResIO (ReleaseKey, ImageView)
-constructImageView image = do
+constructImageView :: HasDevice => Image -> Format -> ResIO (ReleaseKey, ImageView)
+constructImageView image format = do
   let ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
-                   , format = ?swapchainFormat^.formatL
+                   , format
                    , subresourceRange
                    }
       subresourceRange = zero{ aspectMask = IMAGE_ASPECT_COLOR_BIT
@@ -307,27 +275,15 @@ constructImageView image = do
 
   withImageView ?device ivInfo{image} Nothing allocate
 
-constructFramebuffer :: (HasDevice, HasSwapchainRelated)
-                     => ImageView -> ResIO (ReleaseKey, Framebuffer)
-constructFramebuffer imageView = do
-  renderPass <- readRes ?renderPass
-  Extent2D{width, height} <- readIORef ?swapchainExtent
+constructFramebuffer :: HasDevice
+                     => Extent2D -> RenderPass -> ImageView -> ResIO (ReleaseKey, Framebuffer)
+constructFramebuffer Extent2D{width, height} renderPass imageView = do
   let fbInfo = zero{ renderPass
                    , width
                    , height
                    , layers = 1
                    }
   withFramebuffer ?device fbInfo{attachments = [imageView]} Nothing allocate
-
-initCommandPool :: (HasLogger, HasDevice, HasGraphicsQueueFamily) => ResIO (Dict HasCommandPool)
-initCommandPool = do
-  let commandPoolInfo = zero{ queueFamilyIndex = ?graphicsQueueFamily
-                            } :: CommandPoolCreateInfo
-  (_, commandPool) <- withCommandPool ?device commandPoolInfo Nothing allocate
-  let ?commandPool = commandPool
-
-  logDebug "Created command pool."
-  pure Dict
 
 initSyncs :: (HasLogger, HasDevice) => ResIO (Dict HasSyncs)
 initSyncs = do
@@ -342,18 +298,27 @@ initSyncs = do
   logDebug "Created syncs."
   pure Dict
 
+setupCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
+setupCommands = do
+  MkMutables{imageRelateds, renderPass, swapchainExtent, graphicsPipeline} <- readRes ?mutables
+  for_ imageRelateds \MkImageRelated{commandBuffer, framebuffer} -> do
+    useCommandBuffer commandBuffer zero do
+      let renderPassInfo = zero{ renderPass
+                               , framebuffer
+                               , renderArea = zero{extent = swapchainExtent}
+                               , clearValues = [Color $ Float32 0 0 0 1]
+                               }
+      cmdUseRenderPass commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
+        cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
+        cmdDraw commandBuffer 3 1 0 0
+  logDebug "Set up commands."
+
 recreateSwapchain :: (HasLogger, HasVulkanResources) => ResIO ()
 recreateSwapchain = do
   logDebug "Recreating swapchain..."
 
   deviceWaitIdle ?device
 
-  scInfo@(SwapchainCreateInfoKHR{imageExtent}) <- swapchainCreateInfo
-  writeRes ?swapchain =<< constructSwapchain scInfo
-  writeIORef ?swapchainExtent imageExtent
+  writeRes ?mutables constructMutables
 
-  writeRes ?renderPass =<< constructGraphicsRenderPass
-  writeRes ?graphicsPipelineLayout =<< constructGraphicsPipelineLayout
-  writeRes ?graphicsPipeline =<< constructGraphicsPipeline
-
-  writeRess ?imageRelateds =<< constructImageRelateds
+  setupCommands
