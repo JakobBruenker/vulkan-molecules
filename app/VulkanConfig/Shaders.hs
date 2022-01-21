@@ -3,7 +3,7 @@
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 {-# OPTIONS_GHC -Wno-unused-do-bind #-}
 
-module Shaders where
+module VulkanConfig.Shaders where
 
 import FIR
 import FIR.Syntax.Labels

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedLists #-}
 
-module Mutables where
+module Graphics.Mutables where
 
 import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.Vector qualified as V
@@ -27,7 +27,7 @@ import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 
 import Types
 import Utils
-import Shaders (vertPath, fragPath)
+import VulkanConfig.Shaders (vertPath, fragPath)
 import Data.Tuple.Extra (dupe)
 
 initMutables :: (HasLogger, HasGraphicsResources) => ResIO (Dict HasMutables)
@@ -60,7 +60,8 @@ constructSwapchain scInfo = do
 
 swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources) => m (SwapchainCreateInfoKHR '[])
 swapchainCreateInfo = do
-  -- height and width are 0 if the window is minimized, wait until that's not the case
+  -- height and width are 0 if the window is minimized, we wait until that's
+  -- not the case
   fix \loop -> do
     dimensions <- liftIO (GLFW.getFramebufferSize ?window)
     when (allOf both (== 0) dimensions) $ liftIO GLFW.waitEvents *> loop
@@ -303,23 +304,8 @@ initSyncs = do
   logDebug "Created syncs."
   pure Dict
 
-setupCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
-setupCommands = do
-  MkMutables{imageRelateds, renderPass, swapchainExtent, graphicsPipeline} <- readRes ?mutables
-  for_ imageRelateds \MkImageRelated{commandBuffer, framebuffer} -> do
-    useCommandBuffer commandBuffer zero do
-      let renderPassInfo = zero{ renderPass
-                               , framebuffer
-                               , renderArea = zero{extent = swapchainExtent}
-                               , clearValues = [Color $ Float32 0 0 0 1]
-                               }
-      cmdUseRenderPass commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
-        cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
-        cmdDraw commandBuffer 3 1 0 0
-  logDebug "Set up commands."
-
-recreateSwapchain :: (HasLogger, HasVulkanResources) => ResIO ()
-recreateSwapchain = do
+recreateSwapchain :: ResIO () -> (HasLogger, HasVulkanResources) => ResIO ()
+recreateSwapchain setupCommands = do
   logDebug "Recreating swapchain..."
 
   writeIORef ?framebufferResized False
