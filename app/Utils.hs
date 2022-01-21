@@ -3,8 +3,6 @@ module Utils where
 import RIO
 import Data.Tuple (swap)
 
-import Control.Monad.Trans.Resource (ReleaseKey, MonadResource)
-
 import Types
 
 traverseToSnd :: Functor f => (a -> f b) -> a -> f (a, b)
@@ -20,14 +18,8 @@ plural str n = str <> bool "s" "" (n == 1)
 clamp :: Ord a => (a, a) -> a -> a
 clamp (low, high) a = min high (max a low)
 
-mkMResource :: MonadResource m => (ReleaseKey, a) -> m (MResource a)
-mkMResource = newIORef . uncurry MkResource
-
 viewRef :: (MonadReader s m, MonadIO m) => Getting (IORef a) s (IORef a) -> m a
 viewRef l = readIORef =<< view l
-
-readRes :: MonadIO m => MResource a -> m a
-readRes = fmap (view resourceL) . readIORef
 
 logDebug :: (HasLogger, MonadIO m) => Utf8Builder -> m ()
 logDebug = flip runReaderT ?logFunc . RIO.logDebug

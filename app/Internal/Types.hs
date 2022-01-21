@@ -14,7 +14,8 @@ import Vulkan hiding (Display)
 
 import TH
 import Graphics.UI.GLFW qualified as GLFW
-import Control.Monad.Trans.Resource (ReleaseKey)
+import Control.Monad.Trans.Resource (ReleaseKey, release)
+import Data.Coerce (coerce, Coercible)
 
 type MaxFramesInFlight = 2
 
@@ -24,7 +25,6 @@ data AppException
   = GLFWInitError
   | GLFWWindowError
   | GLFWVulkanNotSupportedError
-  | VkGenericError Result
   | VkValidationLayersNotSupported (NonEmpty ByteString)
   | VkNoPhysicalDevicesError
   | VkNoSuitableDevicesError
@@ -41,13 +41,11 @@ instance Display AppException where
     GLFWInitError -> "Failed to initialize GLFW."
     GLFWWindowError -> "Failed to create window."
     GLFWVulkanNotSupportedError -> "GLFW failed to find Vulkan loader or ICD."
-    VkGenericError r -> "Vulkan returned error: " <> displayShow r
     VkValidationLayersNotSupported ls ->
       "Requested validation layer" <> num <> " not supported: " <>
         (displayBytesUtf8 . B.intercalate ", " . toList) ls <> "."
-      where num = case ls of
-              _ :| [] -> " is"
-              _       -> "s are"
+      where num | _ :| [] <- ls = " is"
+                | otherwise     = "s are"
     VkNoPhysicalDevicesError -> "No physical devices found."
     VkNoSuitableDevicesError -> "No suitable devices found."
     VkWrongNumberOfGraphicsPipelines expected actual ->
@@ -67,18 +65,55 @@ data Options = MkOptions { optWidth            :: Natural
 -- abstract type to keep track of whether GLFW is initialized
 data GLFWToken = UnsafeMkGLFWToken
 
+-- a resource that must be allocated and released
+data Resource f a = MkResource { releaseKey :: f ReleaseKey
+                               , resource   :: a
+                               }
+
 -- a mutable resource
-type MResource a = IORef (Resource a)
+type MResource a = IORef (Resource Identity a)
 
-data Resource a = MkResource { releaseKey :: ReleaseKey
-                             , resource   :: a
-                             }
-makeRegularClassy ''Resource
+-- a collection of mutable resources
+type MResources a = IORef (Resource [] a)
 
-data ImageRelated = MkImageRelated { image         :: IORef Image
+mkMResourceGeneric :: (Coercible key (f ReleaseKey), MonadIO m)
+                   => (key, a) -> m (IORef (Resource f a))
+mkMResourceGeneric = newIORef . uncurry MkResource . coerce
+
+readResGeneric :: MonadIO m => IORef (Resource f a) -> m a
+readResGeneric = fmap resource . readIORef
+
+-- | Releases the old resource(s) and registers the new one.
+writeResGeneric :: (Coercible key (f ReleaseKey), Traversable f, MonadIO m)
+                => IORef (Resource f a) -> (key, a) -> m ()
+writeResGeneric res new = do
+  traverse_ release . releaseKey =<< readIORef res
+  writeIORef res . uncurry MkResource $ coerce new
+
+mkMResource :: MonadIO m => (ReleaseKey, a) -> m (MResource a)
+mkMResource = mkMResourceGeneric
+
+readRes :: MonadIO m => MResource a -> m a
+readRes = readResGeneric
+
+-- | Releases the old resource and registers the new one.
+writeRes :: MonadIO m => MResource a -> (ReleaseKey, a) -> m ()
+writeRes = writeResGeneric
+
+mkMResources :: MonadIO m => ([ReleaseKey], a) -> m (MResources a)
+mkMResources = mkMResourceGeneric
+
+readRess :: MonadIO m => MResources a -> m a
+readRess = readResGeneric
+
+-- | Releases the old resources and registers the new one.
+writeRess :: MonadIO m => MResources a -> ([ReleaseKey], a) -> m ()
+writeRess = writeResGeneric
+
+data ImageRelated = MkImageRelated { image         :: Image
                                    , imageInFlight :: IORef (Maybe Fence)
-                                   , imageView     :: MResource ImageView
-                                   , framebuffer   :: MResource Framebuffer
+                                   , imageView     :: ImageView
+                                   , framebuffer   :: Framebuffer
                                    , commandBuffer :: CommandBuffer
                                    }
 makeRegularClassy ''ImageRelated
@@ -168,16 +203,18 @@ type HasSyncs = ( HasImageAvailable
                 , HasInFlight
                 )
 
-type HasCommandPool   = ?commandPool   :: CommandPool
-type HasImageRelateds = ?imageRelateds :: Vector ImageRelated
-type HasVulkanResources = ( HasCommandPool
-                          , HasImageRelateds
-                          , HasGraphicsResources
-                          , HasSwapchainRelated
-                          , HasSyncs
-                          )
+type HasCommandPool              = ?commandPool              :: CommandPool
+type HasImageRelateds            = ?imageRelateds            :: MResources (Vector ImageRelated)
+type HasVulkanResources =
+  ( HasCommandPool,
+    HasImageRelateds,
+    HasGraphicsResources,
+    HasSwapchainRelated,
+    HasSyncs
+  )
 
-type HasApp = ( HasConfig
-              , HasLogger
-              , HasVulkanResources
-              )
+type HasApp =
+  ( HasConfig,
+    HasLogger,
+    HasVulkanResources
+  )

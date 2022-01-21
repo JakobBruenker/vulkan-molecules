@@ -30,10 +30,9 @@ import Control.Applicative (ZipList(..))
 import Control.Monad.Trans.Maybe (runMaybeT, MaybeT)
 import Control.Monad.Trans.Resource (allocate, runResourceT, ResIO, MonadResource)
 import Data.Coerce (coerce)
-import Data.Finite (Finite, natToFinite, modulo)
+import Data.Finite (Finite, natToFinite)
 import Data.Foldable (find)
 import Data.List (nub)
-import Data.Tuple.Extra (dupe)
 import Foreign (malloc, nullPtr, Storable (peek))
 
 import Data.Vector.Sized qualified as Sized
@@ -47,6 +46,7 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      )
 import Vulkan.Zero
 import Vulkan.CStruct.Extends
+import Vulkan.Exception
 
 import Internal.Types(GLFWToken(UnsafeMkGLFWToken))
 
@@ -147,15 +147,16 @@ initWindow = do
   monitor <- preview (ix $ fromIntegral ?monitorIndex) . concat <$> liftIO GLFW.getMonitors
   when (?fullscreen && isNothing monitor) $
     logWarn "Couldn't find desired monitor. Using windowed mode."
+  let actuallyFullscreen = ?fullscreen && isJust monitor
   (xPos, yPos, width, height) <- if
-    | ?fullscreen, Just mon <- monitor -> liftIO $ GLFW.getMonitorWorkarea mon
+    | actuallyFullscreen, Just mon <- monitor -> liftIO $ GLFW.getMonitorWorkarea mon
     | otherwise -> pure (0, 0, fromIntegral ?windowWidth, fromIntegral ?windowHeight)
 
   (_, window) <- allocate
     do traverse_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
-                                     , GLFW.WindowHint'Resizable (not ?fullscreen)
-                                     , GLFW.WindowHint'Decorated (not ?fullscreen)
-                                     , GLFW.WindowHint'Floating ?fullscreen
+                                     , GLFW.WindowHint'Resizable (not actuallyFullscreen)
+                                     , GLFW.WindowHint'Decorated (not actuallyFullscreen)
+                                     , GLFW.WindowHint'Floating actuallyFullscreen
                                      ]
        progName <- getProgName
        maybeM (throwIO GLFWWindowError)
@@ -170,9 +171,10 @@ initWindow = do
 initSurface :: (HasLogger, HasInstance, HasWindow) => ResIO (Dict HasSurface)
 initSurface = do
   (_, surface) <- allocate
-    do liftIO do surfacePtr <- malloc @SurfaceKHR
-                 result <- GLFW.createWindowSurface (instanceHandle ?instance) ?window nullPtr surfacePtr
-                 peek =<< catchVk (coerce @Int32 result, surfacePtr)
+    do liftIO do
+         surfacePtr <- malloc @SurfaceKHR
+         result <- GLFW.createWindowSurface (instanceHandle ?instance) ?window nullPtr surfacePtr
+         peek =<< catchVk (coerce @Int32 result, surfacePtr)
     do destroySurfaceKHR ?instance ?? Nothing
   let ?surface = surface
 
@@ -181,14 +183,15 @@ initSurface = do
   where
     catchVk = \case
       (SUCCESS, x) -> pure x
-      (err    , _) -> throwIO $ VkGenericError err
+      (err    , _) -> throwIO $ VulkanException err
 
-drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> IO ()
+drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ()
 drawFrame currentFrame = do
   swapchain <- readRes ?swapchain
 
   let ixSync :: Sized.Vector MaxFramesInFlight a -> a
       ixSync = view $ Sized.ix currentFrame
+  imageRelateds <- readRess ?imageRelateds
 
   _result <- waitForFences ?device [ixSync ?inFlight] True maxBound
 
@@ -197,7 +200,7 @@ drawFrame currentFrame = do
 
   MkImageRelated{commandBuffer, imageInFlight} <- fromMaybeM
     do throwIO VkCommandBufferIndexOutOfRange
-    do pure $ ?imageRelateds^?ix (fromIntegral imageIndex)
+    do pure $ imageRelateds^?ix (fromIntegral imageIndex)
 
   imageInFlightFence <- readIORef imageInFlight
 
@@ -226,14 +229,17 @@ drawFrame currentFrame = do
                                   }
   void $ queuePresentKHR ?presentQueue presentInfo
 
-mainLoop :: HasApp => IO ()
+mainLoop :: HasApp => ResIO ()
 mainLoop = do
   logDebug "Starting main loop."
   fix ?? natToFinite (Proxy @0) $ \loop currentFrame -> do
-    drawFrame currentFrame
+    -- NB: depending on present mode and possibly other factors, the exception
+    -- is thrown either by 'acquireNextImageKHR' or by 'queuePresentKHR'
+    drawFrame currentFrame `catch` \case
+      VulkanException ERROR_OUT_OF_DATE_KHR -> recreateSwapchain
+      ex -> throwIO ex
     liftIO GLFW.waitEvents
-    let nextFrame = modulo @MaxFramesInFlight $ fromIntegral currentFrame + 1
-    unlessM ?? loop nextFrame $ liftIO $ GLFW.windowShouldClose ?window
+    unlessM ?? loop (currentFrame + 1) $ liftIO $ GLFW.windowShouldClose ?window
 
   -- Allow queues/buffers to finish their job
   deviceWaitIdleSafe ?device
@@ -263,11 +269,11 @@ initPhysicalDevice = do
 
         fmap (fst . maximumOn1 snd) $
           fromMaybeM (throwIO VkNoSuitableDevicesError) . fmap NE.nonEmpty $
-            mapMaybeM ?? physDevs $ \physDev -> runMaybeT do
+            mapMaybeM ?? zip [0..] physDevs $ \(index, physDev) -> runMaybeT do
               let ?physicalDevice = physDev
-              guard =<< checkDeviceExtensionSupport
+              guard =<< checkDeviceExtensionSupport index
               Dict <- querySwapchainSupport
-              Dict <- findQueueFamilies
+              Dict <- findQueueFamilies index
               (Dict,) <$> score
 
   logDebug "Picked device."
@@ -278,8 +284,8 @@ initPhysicalDevice = do
       getPhysicalDeviceProperties ?physicalDevice
 
     findQueueFamilies :: (MonadResource m, HasLogger, HasPhysicalDevice)
-                      => MaybeT m (Dict HasQueueFamilyIndices)
-    findQueueFamilies = do
+                      => Natural -> MaybeT m (Dict HasQueueFamilyIndices)
+    findQueueFamilies index = do
       props <- getPhysicalDeviceQueueFamilyProperties ?physicalDevice
       Just graphics <- pure $ fromIntegral <$>
         V.findIndex (\p -> queueFlags p .&. QUEUE_GRAPHICS_BIT > zero) props
@@ -293,15 +299,21 @@ initPhysicalDevice = do
       let ?graphicsQueueFamily = graphics
           ?presentQueueFamily  = present
       pure Dict
+      where
+        logResult name queueIndex = logDebug $
+          "Found " <> name <> " queue family (index " <> display queueIndex <> ") on device " <>
+          displayShow index <> "."
 
-    logResult name i = logDebug $ "Found " <> name <> " queue family (index " <> display i <> ")."
-
-    checkDeviceExtensionSupport :: (MonadIO m, HasPhysicalDevice) => m Bool
-    checkDeviceExtensionSupport = do
+    checkDeviceExtensionSupport :: (MonadIO m, HasPhysicalDevice) => Natural -> m Bool
+    checkDeviceExtensionSupport index = do
       exts <- fmap extensionName . snd <$> enumerateDeviceExtensionProperties ?physicalDevice Nothing
-      pure $ V.all (`elem` exts) deviceExtensions
+      let yes = V.all (`elem` exts) deviceExtensions
+      logDebug $ "Device " <> displayShow index <> " " <> bool "doesn't support" "supports" yes <>
+                 " extensions " <> displayShow deviceExtensions <> "."
+      pure yes
 
-    querySwapchainSupport :: (MonadIO m, HasPhysicalDevice) => MaybeT m (Dict HasSwapchainSupport)
+    querySwapchainSupport :: (MonadIO m, HasPhysicalDevice)
+                          => MaybeT m (Dict HasSwapchainSupport)
     querySwapchainSupport = do
       let formats      = getPhysicalDeviceSurfaceFormatsKHR ?physicalDevice ?surface
           presentModes = getPhysicalDeviceSurfacePresentModesKHR ?physicalDevice ?surface
@@ -343,14 +355,14 @@ deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
   ]
 
-setupCommands :: (HasLogger, HasVulkanResources) => IO ()
+setupCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupCommands = do
-  for_ ?imageRelateds \MkImageRelated{commandBuffer, framebuffer = framebufferRes} ->
+  imageRelateds <- readRess ?imageRelateds
+  for_ imageRelateds \MkImageRelated{commandBuffer, framebuffer} -> do
     useCommandBuffer commandBuffer zero do
       renderPass <- readRes ?renderPass
       extent <- readIORef ?swapchainExtent
       graphicsPipeline <- readRes ?graphicsPipeline
-      framebuffer <- readRes framebufferRes
       let renderPassInfo = zero{ renderPass
                                , framebuffer
                                , renderArea = zero{extent}
@@ -360,85 +372,6 @@ setupCommands = do
         cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
         cmdDraw commandBuffer 3 1 0 0
   logDebug "Set up commands."
-
-initImageRelateds :: (HasLogger, HasDevice, HasSwapchainRelated, HasCommandPool)
-                  => ResIO (Dict HasImageRelateds)
-initImageRelateds = do
-  swapchain <- readRes ?swapchain
-  (_, images) <- getSwapchainImagesKHR ?device swapchain
-  commandBuffers <- (constructCommandBuffers . fromIntegral . length) images
-  imageRelateds <- V.zipWithM constructImageRelated images commandBuffers
-  let ?imageRelateds = imageRelateds
-
-  logDebug "Created images."
-  pure Dict
-
-constructCommandBuffers :: (HasDevice, HasCommandPool) => Natural -> ResIO (Vector CommandBuffer)
-constructCommandBuffers count = do
-  let commandBuffersInfo = zero{ commandPool = ?commandPool
-                               , level = COMMAND_BUFFER_LEVEL_PRIMARY
-                               , commandBufferCount = fromIntegral count
-                               }
-  snd <$> withCommandBuffers ?device commandBuffersInfo allocate
-
-constructImageRelated :: (HasDevice, HasSwapchainRelated)
-                      => Image -> CommandBuffer -> ResIO ImageRelated
-constructImageRelated img commandBuffer = do
-  image          <- newIORef img
-  imageInFlight  <- constructImageInFlight
-  imageView      <- constructImageView img
-  framebuffer    <- constructFramebuffer =<< readRes imageView
-  pure MkImageRelated{..}
-
-constructImageInFlight :: MonadIO m => m (IORef (Maybe Fence))
-constructImageInFlight = newIORef Nothing
-
-constructImageView :: (HasDevice, HasSwapchainRelated) => Image -> ResIO (MResource ImageView)
-constructImageView image = do
-  let ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
-                   , format = ?swapchainFormat^.formatL
-                   , subresourceRange
-                   }
-      subresourceRange = zero{ aspectMask = IMAGE_ASPECT_COLOR_BIT
-                             , levelCount = 1
-                             , layerCount = 1
-                             }
-
-  mkMResource =<< withImageView ?device ivInfo{image} Nothing allocate
-
-constructFramebuffer :: (HasDevice, HasSwapchainRelated) => ImageView -> ResIO (MResource Framebuffer)
-constructFramebuffer imageView = do
-  renderPass <- readRes ?renderPass
-  Extent2D{width, height} <- readIORef ?swapchainExtent
-  let fbInfo = zero{ renderPass
-                   , width
-                   , height
-                   , layers = 1
-                   }
-  mkMResource =<< withFramebuffer ?device fbInfo{attachments = [imageView]} Nothing allocate
-
-initCommandPool :: (HasLogger, HasDevice, HasGraphicsQueueFamily) => ResIO (Dict HasCommandPool)
-initCommandPool = do
-  let commandPoolInfo = zero{ queueFamilyIndex = ?graphicsQueueFamily
-                            } :: CommandPoolCreateInfo
-  (_, commandPool) <- withCommandPool ?device commandPoolInfo Nothing allocate
-  let ?commandPool = commandPool
-
-  logDebug "Created command pool."
-  pure Dict
-
-initSyncs :: (HasLogger, HasDevice) => ResIO (Dict HasSyncs)
-initSyncs = do
-  (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
-    snd <$> withSemaphore ?device zero Nothing allocate
-  inFlight <- Sized.replicateM $
-    snd <$> withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate
-  let ?imageAvailable = imageAvailable
-      ?renderFinished = renderFinished
-      ?inFlight       = inFlight
-
-  logDebug "Created syncs."
-  pure Dict
 
 initializeVulkan :: (HasLogger, HasConfig) => ResIO (Dict HasVulkanResources)
 initializeVulkan = do
@@ -463,6 +396,6 @@ runApp = runResourceT do
 
   Dict <- initializeVulkan
 
-  lift $ setupCommands *> mainLoop
+  setupCommands *> mainLoop
 
   logInfo "Goodbye!"

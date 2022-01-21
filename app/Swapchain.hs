@@ -12,6 +12,8 @@ import Data.Foldable (find)
 import Data.List (nub)
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, release, ResIO)
 
+import Data.Vector.Sized qualified as Sized
+
 import Graphics.UI.GLFW qualified as GLFW
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -26,13 +28,13 @@ import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 import Types
 import Utils
 import Shaders (vertPath, fragPath)
+import Data.Tuple.Extra (dupe)
 
 initSwapchainRelated :: (HasLogger, HasGraphicsResources) => ResIO (Dict HasSwapchainRelated)
 initSwapchainRelated = do
+
   scInfo@(SwapchainCreateInfoKHR{imageExtent, imageFormat, imageColorSpace}) <- swapchainCreateInfo
-  swapchain <- mkMResource =<< withSwapchainKHR ?device scInfo Nothing allocate
-  let ?swapchain = swapchain
-  logDebug "Created swapchain."
+  Dict <- initSwapchain scInfo
 
   let ?swapchainFormat = SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace}
   swapchainExtent <- newIORef imageExtent
@@ -44,7 +46,21 @@ initSwapchainRelated = do
 
   pure Dict
 
-swapchainCreateInfo :: (HasLogger, HasGraphicsResources) => ResIO (SwapchainCreateInfoKHR '[])
+initSwapchain :: (HasLogger, HasDevice)
+              => SwapchainCreateInfoKHR '[] -> ResIO (Dict HasSwapchain)
+initSwapchain scInfo = do
+  swapchain <- mkMResource =<< constructSwapchain scInfo
+  let ?swapchain = swapchain
+  pure Dict
+
+constructSwapchain :: (HasLogger, HasDevice)
+                   => SwapchainCreateInfoKHR '[] -> ResIO (ReleaseKey, SwapchainKHR)
+constructSwapchain scInfo = do
+  swapchain <- withSwapchainKHR ?device scInfo Nothing allocate
+  logDebug "Created swapchain."
+  pure swapchain
+
+swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources) => m (SwapchainCreateInfoKHR '[])
 swapchainCreateInfo = do
   let SurfaceCapabilitiesKHR{ currentExtent, currentTransform
                             , minImageExtent, maxImageExtent
@@ -102,15 +118,27 @@ loadShader path = do
 
 initGraphicsPipelineLayout :: HasDevice => ResIO (Dict HasGraphicsPipelineLayout)
 initGraphicsPipelineLayout = do
-  let layoutInfo = zero
-  layout <- mkMResource =<< withPipelineLayout ?device layoutInfo Nothing allocate
+  layout <- mkMResource =<< constructGraphicsPipelineLayout
   let ?graphicsPipelineLayout = layout
   pure Dict
+
+constructGraphicsPipelineLayout :: HasDevice => ResIO (ReleaseKey, PipelineLayout)
+constructGraphicsPipelineLayout = do
+  let layoutInfo = zero
+  withPipelineLayout ?device layoutInfo Nothing allocate
 
 initGraphicsPipeline :: ( HasLogger, HasGraphicsResources, HasRenderPass
                         , HasSwapchainExtent, HasGraphicsPipelineLayout)
                      => ResIO (Dict HasGraphicsPipeline)
 initGraphicsPipeline = do
+  graphicsPipeline <- mkMResource =<< constructGraphicsPipeline
+  let ?graphicsPipeline = graphicsPipeline
+  pure Dict
+
+constructGraphicsPipeline :: ( HasLogger, HasGraphicsResources, HasRenderPass
+                             , HasSwapchainExtent, HasGraphicsPipelineLayout)
+                          => ResIO (ReleaseKey, Pipeline)
+constructGraphicsPipeline = do
   extent@Extent2D{width, height} <- readIORef ?swapchainExtent
   let vertexInputState = Just zero
       inputAssemblyState = Just zero{topology = PRIMITIVE_TOPOLOGY_POINT_LIST}
@@ -180,16 +208,22 @@ initGraphicsPipeline = do
   traverse_ @[] release [releaseVert, releaseFrag]
 
   graphicsPipeline <- case pipelines of
-    [pipeline] -> mkMResource (releasePipelines, pipeline)
+    [pipeline] -> pure (releasePipelines, pipeline)
     (length -> num) -> throwIO $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
-  let ?graphicsPipeline = graphicsPipeline
 
   logDebug "Created pipeline."
-  pure Dict
+  pure graphicsPipeline
 
 initGraphicsRenderPass :: (HasLogger, HasGraphicsResources, HasSwapchainFormat)
                        => ResIO (Dict HasRenderPass)
 initGraphicsRenderPass = do
+  renderPass <- mkMResource =<< constructGraphicsRenderPass
+  let ?renderPass = renderPass
+  pure Dict
+
+constructGraphicsRenderPass :: (HasLogger, HasGraphicsResources, HasSwapchainFormat)
+                            => ResIO (ReleaseKey, RenderPass)
+constructGraphicsRenderPass = do
   let colorAttachment = zero{ format = ?swapchainFormat^.formatL
                             , samples = SAMPLE_COUNT_1_BIT
                             , loadOp = ATTACHMENT_LOAD_OP_CLEAR
@@ -217,8 +251,109 @@ initGraphicsRenderPass = do
                            , dependencies = [dependency]
                            } :: RenderPassCreateInfo '[]
 
-  renderPass <- mkMResource =<< withRenderPass ?device renderPassInfo Nothing allocate
-  let ?renderPass = renderPass
+  renderPass <- withRenderPass ?device renderPassInfo Nothing allocate
 
   logDebug "Created render pass."
+  pure renderPass
+
+initImageRelateds :: (HasLogger, HasDevice, HasSwapchainRelated, HasCommandPool)
+                  => ResIO (Dict HasImageRelateds)
+initImageRelateds = do
+  imageRelateds <- mkMResources =<< constructImageRelateds
+  let ?imageRelateds = imageRelateds
   pure Dict
+
+constructImageRelateds :: (HasLogger, HasDevice, HasSwapchainRelated, HasCommandPool)
+                       => ResIO ([ReleaseKey], Vector ImageRelated)
+constructImageRelateds = do
+  swapchain <- readRes ?swapchain
+  (_, images) <- getSwapchainImagesKHR ?device swapchain
+  (cmdBufKey, commandBuffers) <- (constructCommandBuffers . fromIntegral . length) images
+  (releaseKeys, imageRelateds) <- V.unzip <$> V.zipWithM constructImageRelated images commandBuffers
+
+  logDebug "Created images."
+  pure (cmdBufKey : concat releaseKeys, imageRelateds)
+
+constructCommandBuffers :: (HasDevice, HasCommandPool)
+                        => Natural -> ResIO (ReleaseKey, Vector CommandBuffer)
+constructCommandBuffers count = do
+  let commandBuffersInfo = zero{ commandPool = ?commandPool
+                               , level = COMMAND_BUFFER_LEVEL_PRIMARY
+                               , commandBufferCount = fromIntegral count
+                               }
+  withCommandBuffers ?device commandBuffersInfo allocate
+
+constructImageRelated :: (HasDevice, HasSwapchainRelated)
+                      => Image -> CommandBuffer -> ResIO ([ReleaseKey], ImageRelated)
+constructImageRelated image commandBuffer = do
+  imageInFlight                <- constructImageInFlight
+  (imgViewKey , imageView    ) <- constructImageView image
+  (framebufKey, framebuffer  ) <- constructFramebuffer imageView
+  pure ([imgViewKey, framebufKey], MkImageRelated{..})
+
+constructImageInFlight :: MonadIO m => m (IORef (Maybe Fence))
+constructImageInFlight = newIORef Nothing
+
+constructImageView :: (HasDevice, HasSwapchainRelated) => Image -> ResIO (ReleaseKey, ImageView)
+constructImageView image = do
+  let ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
+                   , format = ?swapchainFormat^.formatL
+                   , subresourceRange
+                   }
+      subresourceRange = zero{ aspectMask = IMAGE_ASPECT_COLOR_BIT
+                             , levelCount = 1
+                             , layerCount = 1
+                             }
+
+  withImageView ?device ivInfo{image} Nothing allocate
+
+constructFramebuffer :: (HasDevice, HasSwapchainRelated)
+                     => ImageView -> ResIO (ReleaseKey, Framebuffer)
+constructFramebuffer imageView = do
+  renderPass <- readRes ?renderPass
+  Extent2D{width, height} <- readIORef ?swapchainExtent
+  let fbInfo = zero{ renderPass
+                   , width
+                   , height
+                   , layers = 1
+                   }
+  withFramebuffer ?device fbInfo{attachments = [imageView]} Nothing allocate
+
+initCommandPool :: (HasLogger, HasDevice, HasGraphicsQueueFamily) => ResIO (Dict HasCommandPool)
+initCommandPool = do
+  let commandPoolInfo = zero{ queueFamilyIndex = ?graphicsQueueFamily
+                            } :: CommandPoolCreateInfo
+  (_, commandPool) <- withCommandPool ?device commandPoolInfo Nothing allocate
+  let ?commandPool = commandPool
+
+  logDebug "Created command pool."
+  pure Dict
+
+initSyncs :: (HasLogger, HasDevice) => ResIO (Dict HasSyncs)
+initSyncs = do
+  (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
+    snd <$> withSemaphore ?device zero Nothing allocate
+  inFlight <- Sized.replicateM $
+    snd <$> withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate
+  let ?imageAvailable = imageAvailable
+      ?renderFinished = renderFinished
+      ?inFlight       = inFlight
+
+  logDebug "Created syncs."
+  pure Dict
+
+recreateSwapchain :: (HasLogger, HasVulkanResources) => ResIO ()
+recreateSwapchain = do
+  logDebug "Recreating swapchain..."
+
+  deviceWaitIdle ?device
+
+  scInfo@(SwapchainCreateInfoKHR{imageExtent}) <- swapchainCreateInfo
+  writeRes ?swapchain =<< constructSwapchain scInfo
+  writeIORef ?swapchainExtent imageExtent
+
+  writeRes ?renderPass =<< constructGraphicsRenderPass
+  writeRes ?graphicsPipelineLayout =<< constructGraphicsPipelineLayout
+  writeRes ?graphicsPipeline =<< constructGraphicsPipeline
+
+  writeRess ?imageRelateds =<< constructImageRelateds
