@@ -30,14 +30,15 @@ import Utils
 import VulkanConfig.Shaders (vertPath, fragPath)
 import Data.Tuple.Extra (dupe)
 
-initMutables :: (HasLogger, HasGraphicsResources, HasGraphicsPipelineLayoutInfo)
+initMutables :: (HasLogger, HasGraphicsResources, HasGraphicsPipelineLayoutInfo, HasVertexInputInfo)
              => ResIO (Dict HasMutables)
 initMutables = do
   mutables <- mkMResources =<< constructMutables
   let ?mutables = mutables
   pure Dict
 
-constructMutables :: (HasLogger, HasGraphicsResources, HasGraphicsPipelineLayoutInfo)
+constructMutables :: (HasLogger, HasGraphicsResources, HasGraphicsPipelineLayoutInfo
+                     , HasVertexInputInfo)
                   => ResIO ([ReleaseKey], Mutables)
 constructMutables = do
   scInfo@(SwapchainCreateInfoKHR{ imageExtent = swapchainExtent
@@ -131,10 +132,10 @@ constructGraphicsPipelineLayout :: HasDevice
 constructGraphicsPipelineLayout layoutInfo = do
   withPipelineLayout ?device layoutInfo Nothing allocate
 
-constructGraphicsPipeline :: ( HasLogger, HasGraphicsResources)
+constructGraphicsPipeline :: ( HasLogger, HasGraphicsResources, HasVertexInputInfo)
                           => RenderPass -> Extent2D -> PipelineLayout -> ResIO (ReleaseKey, Pipeline)
 constructGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
-  let vertexInputState = Just zero
+  let vertexInputState = Just ?vertexInputInfo
       inputAssemblyState = Just zero{topology = PRIMITIVE_TOPOLOGY_POINT_LIST}
       viewport = zero{ width = fromIntegral width
                      , height = fromIntegral height

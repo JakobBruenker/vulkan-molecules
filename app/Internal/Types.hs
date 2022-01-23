@@ -7,14 +7,15 @@ import RIO.ByteString qualified as B
 import RIO.Text qualified as T
 
 import Data.Vector.Sized qualified as Sized
+import Graphics.UI.GLFW qualified as GLFW
+import Control.Monad.Trans.Resource (ReleaseKey, release)
 
 import Vulkan hiding ( Display
                      , Win32KeyedMutexAcquireReleaseInfoNV(releaseKeys)
                      , Win32KeyedMutexAcquireReleaseInfoKHR(releaseKeys)
                      )
 
-import Graphics.UI.GLFW qualified as GLFW
-import Control.Monad.Trans.Resource (ReleaseKey, release)
+import Vulkan.CStruct.Extends
 
 type MaxFramesInFlight = 2
 
@@ -182,7 +183,7 @@ type HasSyncs = ( HasImageAvailable
 
 type HasMutables = ?mutables :: MResources Mutables
 type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
-type HasVertexInputInfo = ?vertexInputInfo :: PipelineVertexInputStateCreateInfo '[]
+type HasVertexInputInfo = ?vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
 type HasVertexBufferInfo = ?vertexBufferInfo :: BufferCreateInfo '[]
 type HasVertexBuffer = ?vertexBuffer :: Buffer
 type HasVertexData = ?vertexData :: SVector Float

@@ -11,6 +11,7 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , DisplayPropertiesKHR(display)
                      )
 import Vulkan.Zero
+import Vulkan.CStruct.Extends
 
 import Types
 import Utils
@@ -53,8 +54,8 @@ setupGraphicsCommands = do
 graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
 graphicsPipelineLayoutInfo = zero
 
-vertexInputInfo :: PipelineVertexInputStateCreateInfo '[]
-vertexInputInfo = zero{vertexBindingDescriptions, vertexAttributeDescriptions}
+vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
+vertexInputInfo = SomeStruct zero{vertexBindingDescriptions, vertexAttributeDescriptions}
   where
     vertexBindingDescriptions = [ zero { binding = 0
                                        , stride = sizeVertex

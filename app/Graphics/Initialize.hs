@@ -268,8 +268,9 @@ initVertexBuffer = do
   let BufferCreateInfo{size = bufferSize} = ?vertexBufferInfo
 
   liftIO $ withMappedMemory ?device memory 0 bufferSize zero bracket \target ->
-    VS.unsafeWith ?vertexData \(castPtr -> source) ->
+    VS.unsafeWith ?vertexData \(castPtr -> source) -> do
       copyBytes target source $ V.length ?vertexData * sizeOf (VS.head ?vertexData)
+      -- flushMappedMemoryRanges ?device [MappedMemoryRange{memory, offset = 0, size = WHOLE_SIZE}]
 
   logDebug "Created vertex buffer."
   pure Dict
@@ -285,10 +286,10 @@ initializeVulkan setupGraphicsCommands = do
   Dict <- initSurface
   Dict <- initPhysicalDevice
   Dict <- initDevice
+  Dict <- initVertexBuffer
   Dict <- initQueues
   Dict <- initCommandPool
   Dict <- initMutables
-  Dict <- initVertexBuffer
   Dict <- initSyncs
 
   setupGraphicsCommands $> Dict
