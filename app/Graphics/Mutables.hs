@@ -10,7 +10,7 @@ import Control.Lens (both, allOf)
 import Data.Bits ((.|.))
 import Data.Foldable (find)
 import Data.List (nub)
-import Control.Monad.Trans.Resource (allocate, ReleaseKey, release, ResIO)
+import Control.Monad.Trans.Resource (allocate, ReleaseKey, ResIO)
 
 import Data.Vector.Sized qualified as Sized
 
@@ -120,10 +120,10 @@ swapchainCreateInfo = do
            , clipped = True
            }
 
-loadShader :: HasDevice => FilePath -> ResIO (ReleaseKey, ShaderModule)
-loadShader path = do
+withShader :: (MonadUnliftIO m, HasDevice) => FilePath -> (ShaderModule -> m r) -> m r
+withShader path action = do
   bytes <- readFileBinary path
-  withShaderModule ?device zero{code = bytes} Nothing allocate
+  withShaderModule ?device zero{code = bytes} Nothing bracket action
 
 constructGraphicsPipelineLayout :: HasDevice
                                 => PipelineLayoutCreateInfo -> ResIO (ReleaseKey, PipelineLayout)
@@ -168,35 +168,32 @@ constructGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
                                               , attachments = [blendAttachment]
                                               }
 
-  (releaseVert, vertModule) <- loadShader ?vertexShaderPath
-  (releaseFrag, fragModule) <- loadShader ?fragmentShaderPath
-
-  let vertShaderStageInfo = zero{ stage = SHADER_STAGE_VERTEX_BIT
-                                , module' = vertModule
-                                , name = "main"
-                                }
-      fragShaderStageInfo = zero{ stage = SHADER_STAGE_FRAGMENT_BIT
-                                , module' = fragModule
-                                , name = "main"
-                                }
-      shaderStages = SomeStruct <$> [vertShaderStageInfo, fragShaderStageInfo]
-      pipelineInfo = pure $ SomeStruct zero{ stages = shaderStages
-                                           , vertexInputState
-                                           , inputAssemblyState
-                                           , viewportState
-                                           , rasterizationState
-                                           , multisampleState
-                                           , colorBlendState
-                                           , layout
-                                           , renderPass
-                                           , subpass = 0
-                                           }
-
   (releasePipelines, (_, pipelines)) <-
-    withGraphicsPipelines ?device zero pipelineInfo Nothing allocate
+    withShader ?vertexShaderPath \vertModule ->
+      withShader ?fragmentShaderPath \fragModule -> do
 
-  -- We don't need the shader modules anymore after creating the pipeline
-  traverse_ @[] release [releaseVert, releaseFrag]
+        let vertShaderStageInfo = zero{ stage = SHADER_STAGE_VERTEX_BIT
+                                      , module' = vertModule
+                                      , name = "main"
+                                      }
+            fragShaderStageInfo = zero{ stage = SHADER_STAGE_FRAGMENT_BIT
+                                      , module' = fragModule
+                                      , name = "main"
+                                      }
+            shaderStages = SomeStruct <$> [vertShaderStageInfo, fragShaderStageInfo]
+            pipelineInfo = pure $ SomeStruct zero{ stages = shaderStages
+                                                 , vertexInputState
+                                                 , inputAssemblyState
+                                                 , viewportState
+                                                 , rasterizationState
+                                                 , multisampleState
+                                                 , colorBlendState
+                                                 , layout
+                                                 , renderPass
+                                                 , subpass = 0
+                                                 }
+
+        withGraphicsPipelines ?device zero pipelineInfo Nothing allocate
 
   graphicsPipeline <- case pipelines of
     [pipeline] -> pure (releasePipelines, pipeline)
