@@ -152,6 +152,7 @@ type HasGLFW               = ?glfw               :: GLFWToken
 type HasWindow             = ?window             :: GLFW.Window
 type HasFramebufferResized = ?framebufferResized :: IORef Bool
 type HasInstance           = ?instance           :: Instance
+type HasDebugMessenger     = ?debugMessenger     :: DebugUtilsMessengerEXT
 type HasValidationLayers   = ?validationLayers   :: Vector ByteString
 type HasDevice             = ?device             :: Device
 type HasSurface            = ?surface            :: SurfaceKHR

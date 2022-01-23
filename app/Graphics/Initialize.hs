@@ -9,7 +9,7 @@ import RIO.Vector qualified as V
 
 import Control.Lens ((??), ix)
 import Control.Monad.Extra (fromMaybeM, ifM, maybeM)
-import Data.Bits (Bits((.&.)))
+import Data.Bits (Bits((.&.), (.|.)))
 import System.Environment (getProgName)
 import Control.Applicative (ZipList(..))
 import Control.Monad.Trans.Maybe (runMaybeT, MaybeT)
@@ -17,7 +17,7 @@ import Control.Monad.Trans.Resource (allocate, ResIO, MonadResource)
 import Data.Coerce (coerce)
 import Data.Foldable (find)
 import Data.List (nub)
-import Foreign (malloc, nullPtr, Storable (peek))
+import Foreign (malloc, nullPtr, Storable(peek), freeHaskellFunPtr)
 
 
 import Graphics.UI.GLFW qualified as GLFW
@@ -49,13 +49,75 @@ initGLFW = do
   logDebug "Initialized GLFW."
   pure Dict
 
+debugCallback :: HasLogger => FN_vkDebugUtilsMessengerCallbackEXT
+debugCallback severity msgType callbackData _userData = do
+  DebugUtilsMessengerCallbackDataEXT{ messageIdName
+                                    , messageIdNumber
+                                    , message
+                                    , queueLabels
+                                    , cmdBufLabels
+                                    , objects
+                                    } <- peekCStruct callbackData
+  let logFun = case severity of
+        DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT -> logDebug
+        DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT    -> logInfo
+        DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT -> logWarn
+        DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT   -> logError
+        _                                            -> logDebug
+
+      msgTypeStr = case msgType of
+        DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     -> "General"
+        DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  -> "Validation"
+        DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT -> "Performance"
+        _ -> "Unknown category"
+
+  logFun $ "Validation layer message (" <> msgTypeStr <> "):\n"
+        <> "ID: " <> display messageIdNumber <> " - "
+        <> maybe "Unknown" displayBytesUtf8 messageIdName <> "\n"
+        <> displayBytesUtf8 message <> "\n"
+        <> "Active queue labels: " <> displayShow queueLabels <> "\n"
+        <> "Active command buffer labels: " <> displayShow cmdBufLabels <> "\n"
+        <> "Related objects: " <> displayShow objects
+
+  -- Always return FALSE to indicate that the triggering Vulkan call should not
+  -- be aborted.
+  pure FALSE
+
+-- *Sigh* this doesn't actually work, you get
+--   "schedule: re-entered unsafely"
+-- at runtime:
+-- The problem: If you entered C-land via an unsafe foreign function call, you
+-- *cannot* use Haskell callbacks from there.
+-- However: Maybe we can use the callback to give the data to a global pointer,
+-- and then periodically check the pointer in Haskell. That's somewhat
+-- unsatisfying though, because it'd really be preferable to get logs directly
+-- rather than after calling. It might also be possible to somehow set up a
+-- separate thread, and have it wait to be signalled by the callback written in C.
+foreign import ccall "wrapper"
+  createDebugCallback :: FN_vkDebugUtilsMessengerCallbackEXT -> IO PFN_vkDebugUtilsMessengerCallbackEXT
+
+initDebugMessenger :: (HasLogger, HasInstance) => ResIO ()
+initDebugMessenger = do
+  (_, callback) <- allocate (createDebugCallback debugCallback) freeHaskellFunPtr
+  let debugMsngrInfo = zero{ messageSeverity = DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT
+                                           .|. DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+                                           .|. DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+                                           .|. DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
+                           , messageType = DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
+                                       .|. DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+                                       .|. DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT
+                           , pfnUserCallback = callback
+                           }
+  void $ withDebugUtilsMessengerEXT ?instance debugMsngrInfo Nothing allocate
+
 initInstance :: (HasLogger, HasValidationLayers) => ResIO (Dict HasInstance)
 initInstance = do
   unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
   logDebug "Verified GLFW Vulkan support."
 
-  enabledExtensionNames <- V.fromList <$>
-    do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
+  enabledExtensionNames <- V.fromList . mappend
+    [EXT_DEBUG_UTILS_EXTENSION_NAME | not $ null ?validationLayers] <$> do
+      liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
   logDebug $ "Required extensions for GLFW: " <> displayShow enabledExtensionNames
 
   let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
@@ -68,6 +130,9 @@ initInstance = do
   let ?instance = inst
 
   logDebug "Created instance."
+
+  initDebugMessenger
+
   pure Dict
 
 initWindow :: (HasLogger, HasConfig, HasGLFW) => ResIO (Dict (HasWindow, HasFramebufferResized))
