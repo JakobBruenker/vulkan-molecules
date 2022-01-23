@@ -15,13 +15,14 @@ import Vulkan.CStruct.Extends
 
 import Types
 import Utils
+import Foreign (sizeOf)
 
 -- This can probably be improved
 numVertices, offset0, offset1, sizeVertex :: Word32
 numVertices = 5
 offset0 = 0
 offset1 = 2
-sizeVertex = 5
+sizeVertex = 5 * fromIntegral (sizeOf (0.0 :: Float))
 
 -- Could probably do SVector (SVector Float), would be nicer.
 -- We'd have to have an existential type for ?vertexData.
