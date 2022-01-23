@@ -15,7 +15,7 @@ import Vulkan.CStruct.Extends
 
 import Types
 import Utils
-import Foreign (sizeOf)
+import Foreign (sizeOf, (.|.))
 
 -- This can probably be improved
 floatSize, numVertices, offset0, offset1, sizeVertex :: Word32
@@ -78,7 +78,7 @@ vertexInputInfo = SomeStruct zero{vertexBindingDescriptions, vertexAttributeDesc
 
 vertexBufferInfo :: BufferCreateInfo '[]
 vertexBufferInfo = zero { size = ((*) `on` fromIntegral) numVertices sizeVertex
-                        , usage = BUFFER_USAGE_VERTEX_BUFFER_BIT
+                        , usage = BUFFER_USAGE_VERTEX_BUFFER_BIT .|. BUFFER_USAGE_TRANSFER_DST_BIT
                         , sharingMode = SHARING_MODE_EXCLUSIVE
                         }
 

@@ -15,7 +15,7 @@ import Data.Bits (Bits((.&.)), testBit, (.|.), xor)
 import System.Environment (getProgName)
 import Control.Applicative (ZipList(..))
 import Control.Monad.Trans.Maybe (runMaybeT, MaybeT)
-import Control.Monad.Trans.Resource (allocate, ResIO, MonadResource)
+import Control.Monad.Trans.Resource (allocate, ResIO, MonadResource, ReleaseKey, release)
 import Data.Coerce (coerce)
 import Data.Foldable (find)
 import Data.List (nub)
@@ -243,19 +243,18 @@ initCommandPool = do
   logDebug "Created command pool."
   pure Dict
 
-initVertexBuffer :: (HasLogger, HasPhysicalDevice, HasDevice, HasVertexBufferInfo, HasVertexData)
-                 => ResIO (Dict HasVertexBuffer)
-initVertexBuffer = do
-  (_, vertexBuffer) <- withBuffer ?device ?vertexBufferInfo Nothing allocate
-  let ?vertexBuffer = vertexBuffer
+constructBuffer :: (HasPhysicalDevice, HasDevice)
+                => BufferCreateInfo '[] -> MemoryPropertyFlags
+                -> ResIO ((ReleaseKey, Buffer), (ReleaseKey, DeviceMemory))
+constructBuffer info properties = do
+  (bufferKey, buffer) <- withBuffer ?device info Nothing allocate
 
   MemoryRequirements{ size = allocationSize
                     , memoryTypeBits
-                    } <- getBufferMemoryRequirements ?device ?vertexBuffer
+                    } <- getBufferMemoryRequirements ?device buffer
   PhysicalDeviceMemoryProperties{memoryTypes} <- getPhysicalDeviceMemoryProperties ?physicalDevice
 
-  let properties = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
-      memoryType = ifind ?? memoryTypes $ \i MemoryType{propertyFlags} ->
+  let memoryType = ifind ?? memoryTypes $ \i MemoryType{propertyFlags} ->
         testBit memoryTypeBits i &&
         -- check whether all properties are set
         ((propertyFlags `xor` properties) .&. properties == zero)
@@ -263,16 +262,54 @@ initVertexBuffer = do
   memoryTypeIndex <- maybe (throwIO VkNoSuitableMemoryType) (pure . fromIntegral . fst) memoryType
 
   let allocInfo = zero{allocationSize , memoryTypeIndex}
-  (_, memory) <- withMemory ?device allocInfo Nothing allocate
+  (memoryKey, memory) <- withMemory ?device allocInfo Nothing allocate
 
-  bindBufferMemory ?device ?vertexBuffer memory 0
+  bindBufferMemory ?device buffer memory 0
 
-  let BufferCreateInfo{size = bufferSize} = ?vertexBufferInfo
+  pure ((bufferKey, buffer), (memoryKey, memory))
 
-  liftIO $ withMappedMemory ?device memory 0 bufferSize zero bracket \target ->
-    VS.unsafeWith ?vertexData \(castPtr -> source) -> do
+copyBuffer :: (MonadUnliftIO m, HasDevice, HasCommandPool)
+           => Queue -> "src" ::: Buffer -> "dst" ::: Buffer -> DeviceSize -> m ()
+copyBuffer queue src dst size = do
+  let allocInfo = zero{ level = COMMAND_BUFFER_LEVEL_PRIMARY
+                      , commandPool = ?commandPool
+                      , commandBufferCount = 1
+                      }
+  let beginInfo = zero{flags = COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT} :: CommandBufferBeginInfo '[]
+  withCommandBuffers ?device allocInfo bracket \case
+    [cmdBuffer] -> do
+      useCommandBuffer cmdBuffer beginInfo do
+        cmdCopyBuffer cmdBuffer src dst [zero{size} :: BufferCopy]
+      let submitInfo = SomeStruct zero{commandBuffers = [commandBufferHandle cmdBuffer]}
+      queueSubmit queue [submitInfo] NULL_HANDLE
+      queueWaitIdle queue
+      pure ()
+    bufs -> throwIO $ VkWrongNumberOfCommandBuffers 1 (fromIntegral $ length bufs)
+
+initVertexBuffer :: (HasLogger, HasPhysicalDevice, HasDevice, HasGraphicsQueue, HasCommandPool,
+                     HasVertexBufferInfo, HasVertexData)
+                 => ResIO (Dict HasVertexBuffer)
+initVertexBuffer = do
+  let stagingBufInfo = ?vertexBufferInfo{ usage = BUFFER_USAGE_TRANSFER_SRC_BIT
+                                        , sharingMode = SHARING_MODE_EXCLUSIVE
+                                        } :: BufferCreateInfo '[]
+      stagingBufProps = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
+      BufferCreateInfo{size = bufferSize} = ?vertexBufferInfo
+
+  ((sBufKey, stagingBuffer), (sMemKey, stagingMemory)) <- constructBuffer stagingBufInfo stagingBufProps
+
+  liftIO $ withMappedMemory ?device stagingMemory 0 bufferSize zero bracket \(castPtr -> target) ->
+    VS.unsafeWith ?vertexData \source -> do
       copyBytes target source $ V.length ?vertexData * sizeOf (VS.head ?vertexData)
-      -- flushMappedMemoryRanges ?device [MappedMemoryRange{memory, offset = 0, size = WHOLE_SIZE}]
+
+  let vertBufProps = MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+  ((_, vertexBuffer), _) <- constructBuffer ?vertexBufferInfo vertBufProps
+  let ?vertexBuffer = vertexBuffer
+
+  copyBuffer ?graphicsQueue stagingBuffer vertexBuffer bufferSize
+
+  -- We don't need the staging buffer anymore
+  traverse_ @[] release [sBufKey, sMemKey]
 
   logDebug "Created vertex buffer."
   pure Dict
@@ -287,9 +324,9 @@ initializeVulkan setupGraphicsCommands = do
   Dict <- initSurface
   Dict <- initPhysicalDevice
   Dict <- initDevice
-  Dict <- initVertexBuffer
   Dict <- initQueues
   Dict <- initCommandPool
+  Dict <- initVertexBuffer
   Dict <- initMutables
   Dict <- initSyncs
 

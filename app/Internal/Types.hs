@@ -28,6 +28,7 @@ data AppException
   | VkValidationLayersNotSupported (NonEmpty ByteString)
   | VkNoPhysicalDevices
   | VkNoSuitableDevices
+  | VkWrongNumberOfCommandBuffers ("expected" ::: Natural) ("actual" ::: Natural)
   | VkWrongNumberOfGraphicsPipelines ("expected" ::: Natural) ("actual" ::: Natural)
   | VkCommandBufferIndexOutOfRange
   | VkNoSuitableMemoryType
@@ -49,6 +50,9 @@ instance Display AppException where
                 | otherwise     = "s are"
     VkNoPhysicalDevices -> "No physical devices found."
     VkNoSuitableDevices -> "No suitable devices found."
+    VkWrongNumberOfCommandBuffers expected actual ->
+      "Wrong number of graphics pipelines was created: Expected " <>
+      displayShow expected <> " but got " <> displayShow actual <> "."
     VkWrongNumberOfGraphicsPipelines expected actual ->
       "Wrong number of graphics pipelines was created: Expected " <>
       displayShow expected <> " but got " <> displayShow actual <> "."
