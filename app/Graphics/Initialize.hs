@@ -6,10 +6,12 @@ import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.ByteString qualified as B
 import RIO.NonEmpty qualified as NE
 import RIO.Vector qualified as V
+import RIO.Vector.Storable.Partial qualified as VS
+import RIO.Vector.Storable.Unsafe qualified as VS
 
 import Control.Lens ((??), ix)
 import Control.Monad.Extra (fromMaybeM, ifM, maybeM)
-import Data.Bits (Bits((.&.)))
+import Data.Bits (Bits((.&.)), testBit, (.|.))
 import System.Environment (getProgName)
 import Control.Applicative (ZipList(..))
 import Control.Monad.Trans.Maybe (runMaybeT, MaybeT)
@@ -17,7 +19,9 @@ import Control.Monad.Trans.Resource (allocate, ResIO, MonadResource)
 import Data.Coerce (coerce)
 import Data.Foldable (find)
 import Data.List (nub)
-import Foreign (malloc, nullPtr, Storable (peek))
+import Foreign (malloc, nullPtr, Storable (peek, sizeOf), copyBytes, castPtr)
+import Data.List.NonEmpty.Extra (maximumOn1)
+import Control.Lens.Combinators (ifind)
 
 
 import Graphics.UI.GLFW qualified as GLFW
@@ -36,7 +40,6 @@ import Internal.Types(GLFWToken(UnsafeMkGLFWToken))
 import Graphics.Mutables
 import Utils
 import Types
-import Data.List.NonEmpty.Extra (maximumOn1)
 
 initGLFW :: HasLogger => ResIO (Dict HasGLFW)
 initGLFW = do
@@ -46,12 +49,12 @@ initGLFW = do
     do const $ liftIO GLFW.terminate
   let ?glfw = glfwToken
 
-  logDebug "Initialized GLFW."
+  logDebug "InitializedGLFW."
   pure Dict
 
 initInstance :: (HasLogger, HasValidationLayers) => ResIO (Dict HasInstance)
 initInstance = do
-  unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupportedError
+  unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupported
   logDebug "Verified GLFW Vulkan support."
 
   enabledExtensionNames <- V.fromList <$>
@@ -139,13 +142,13 @@ initPhysicalDevice :: (HasLogger, HasInstance, HasSurface)
 initPhysicalDevice = do
   dict <- enumeratePhysicalDevices ?instance >>= do
     snd >>> toList >>> NE.nonEmpty >>> maybe
-      do throwIO VkNoPhysicalDevicesError
+      do throwIO VkNoPhysicalDevices
       \(toList -> physDevs) -> do
         let lds = length physDevs
         logDebug $ "Found " <> display lds <> plural " physical device" lds <> "."
 
         fmap (fst . maximumOn1 snd) $
-          fromMaybeM (throwIO VkNoSuitableDevicesError) . fmap NE.nonEmpty $
+          fromMaybeM (throwIO VkNoSuitableDevices) . fmap NE.nonEmpty $
             mapMaybeM ?? zip [0..] physDevs $ \(index, physDev) -> runMaybeT do
               let ?physicalDevice = physDev
               guard =<< checkDeviceExtensionSupport index
@@ -240,7 +243,39 @@ initCommandPool = do
   logDebug "Created command pool."
   pure Dict
 
-initializeVulkan :: (HasLogger, HasConfig, HasGraphicsPipelineLayoutInfo)
+initVertexBuffer :: (HasLogger, HasPhysicalDevice, HasDevice, HasVertexBufferInfo, HasVertexData)
+                 => ResIO (Dict HasVertexBuffer)
+initVertexBuffer = do
+  (_, vertexBuffer) <- withBuffer ?device ?vertexBufferInfo Nothing allocate
+  let ?vertexBuffer = vertexBuffer
+
+  MemoryRequirements{ size = allocationSize
+                    , memoryTypeBits
+                    } <- getBufferMemoryRequirements ?device ?vertexBuffer
+  PhysicalDeviceMemoryProperties{memoryTypes} <- getPhysicalDeviceMemoryProperties ?physicalDevice
+
+  let properties = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
+      memoryType = ifind ?? memoryTypes $ \i MemoryType{propertyFlags} ->
+        testBit memoryTypeBits i && (propertyFlags .&. properties > zero)
+
+  memoryTypeIndex <- maybe (throwIO VkNoSuitableMemoryType) (pure . fromIntegral . fst) memoryType
+
+  let allocInfo = zero{allocationSize , memoryTypeIndex}
+  (_, memory) <- withMemory ?device allocInfo Nothing allocate
+
+  bindBufferMemory ?device ?vertexBuffer memory 0
+
+  let BufferCreateInfo{size = bufferSize} = ?vertexBufferInfo
+
+  liftIO $ withMappedMemory ?device memory 0 bufferSize zero bracket \target ->
+    VS.unsafeWith ?vertexData \(castPtr -> source) ->
+      copyBytes target source $ V.length ?vertexData * sizeOf (VS.head ?vertexData)
+
+  logDebug "Created vertex buffer."
+  pure Dict
+
+initializeVulkan :: ( HasLogger, HasConfig, HasGraphicsPipelineLayoutInfo
+                    , HasVertexBufferInfo, HasVertexInputInfo, HasVertexData)
                  => (HasVulkanResources => ResIO ()) -> ResIO (Dict HasVulkanResources)
 initializeVulkan setupGraphicsCommands = do
   Dict <- initGLFW
@@ -253,6 +288,7 @@ initializeVulkan setupGraphicsCommands = do
   Dict <- initQueues
   Dict <- initCommandPool
   Dict <- initMutables
+  Dict <- initVertexBuffer
   Dict <- initSyncs
 
   setupGraphicsCommands $> Dict

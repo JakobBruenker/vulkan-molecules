@@ -23,12 +23,13 @@ data Dict c = c => Dict
 data AppException
   = GLFWInitError
   | GLFWWindowError
-  | GLFWVulkanNotSupportedError
+  | GLFWVulkanNotSupported
   | VkValidationLayersNotSupported (NonEmpty ByteString)
-  | VkNoPhysicalDevicesError
-  | VkNoSuitableDevicesError
+  | VkNoPhysicalDevices
+  | VkNoSuitableDevices
   | VkWrongNumberOfGraphicsPipelines ("expected" ::: Natural) ("actual" ::: Natural)
   | VkCommandBufferIndexOutOfRange
+  | VkNoSuitableMemoryType
 
 instance Exception AppException
 
@@ -39,19 +40,20 @@ instance Display AppException where
   display = \case
     GLFWInitError -> "Failed to initialize GLFW."
     GLFWWindowError -> "Failed to create window."
-    GLFWVulkanNotSupportedError -> "GLFW failed to find Vulkan loader or ICD."
+    GLFWVulkanNotSupported -> "GLFW failed to find Vulkan loader or ICD."
     VkValidationLayersNotSupported ls ->
       "Requested validation layer" <> num <> " not supported: " <>
         (displayBytesUtf8 . B.intercalate ", " . toList) ls <> "."
       where num | _ :| [] <- ls = " is"
                 | otherwise     = "s are"
-    VkNoPhysicalDevicesError -> "No physical devices found."
-    VkNoSuitableDevicesError -> "No suitable devices found."
+    VkNoPhysicalDevices -> "No physical devices found."
+    VkNoSuitableDevices -> "No suitable devices found."
     VkWrongNumberOfGraphicsPipelines expected actual ->
       "Wrong number of graphics pipelines was created: Expected " <>
       displayShow expected <> " but got " <> displayShow actual <> "."
     VkCommandBufferIndexOutOfRange -> "Vulkan requested a command buffer with" <>
       " a higher index than available."
+    VkNoSuitableMemoryType -> "Coludn't find a suitable memory type for Vulkan buffer creation."
 
 data Options = MkOptions { optWidth            :: Natural
                          , optHeight           :: Natural
@@ -178,12 +180,19 @@ type HasSyncs = ( HasImageAvailable
                 , HasInFlight
                 )
 
-type HasMutables                   = ?mutables                   :: MResources Mutables
+type HasMutables = ?mutables :: MResources Mutables
 type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
+type HasVertexInputInfo = ?vertexInputInfo :: PipelineVertexInputStateCreateInfo '[]
+type HasVertexBufferInfo = ?vertexBufferInfo :: BufferCreateInfo '[]
+type HasVertexBuffer = ?vertexBuffer :: Buffer
+type HasVertexData = ?vertexData :: SVector Float
 type HasVulkanResources =
   ( HasMutables
   , HasGraphicsResources
   , HasGraphicsPipelineLayoutInfo
+  , HasVertexInputInfo
+  , HasVertexBufferInfo
+  , HasVertexBuffer
   , HasSyncs
   )
 

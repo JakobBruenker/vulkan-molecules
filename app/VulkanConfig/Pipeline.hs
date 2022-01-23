@@ -15,6 +15,23 @@ import Vulkan.Zero
 import Types
 import Utils
 
+-- This can probably be improved
+numVertices, offset0, offset1, sizeVertex :: Word32
+numVertices = 5
+offset0 = 0
+offset1 = 2
+sizeVertex = 5
+
+-- Could probably do SVector (SVector Float), would be nicer.
+-- We'd have to have an existential type for ?vertexData.
+vertexData :: SVector Float
+vertexData = [ 0.1, 0.2,  0.3, 0.4, 0.5
+             , 0.2, 0.3,  0.4, 0.5, 0.6
+             , 0.3, 0.4,  0.5, 0.6, 0.7
+             , 0.4, 0.5,  0.6, 0.7, 0.8
+             , 0.5, 0.6,  0.7, 0.8, 0.9
+             ]
+
 setupGraphicsCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupGraphicsCommands = do
   MkMutables{imageRelateds, renderPass, swapchainExtent, graphicsPipeline} <- readRes ?mutables
@@ -27,8 +44,37 @@ setupGraphicsCommands = do
                                }
       cmdUseRenderPass commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
         cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
-        cmdDraw commandBuffer 3 1 0 0
+
+        cmdBindVertexBuffers commandBuffer 0 [?vertexBuffer] [0]
+
+        cmdDraw commandBuffer numVertices 1 0 0
   logDebug "Set up commands."
 
 graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
 graphicsPipelineLayoutInfo = zero
+
+vertexInputInfo :: PipelineVertexInputStateCreateInfo '[]
+vertexInputInfo = zero{vertexBindingDescriptions, vertexAttributeDescriptions}
+  where
+    vertexBindingDescriptions = [ zero { binding = 0
+                                       , stride = sizeVertex
+                                       , inputRate = VERTEX_INPUT_RATE_VERTEX
+                                       } :: VertexInputBindingDescription
+                                ]
+    vertexAttributeDescriptions = [ zero { binding = 0
+                                         , location = 0
+                                         , format = FORMAT_R32G32_SFLOAT
+                                         , offset = offset0
+                                         } :: VertexInputAttributeDescription
+                                  , zero { binding = 0
+                                         , location = 1
+                                         , format = FORMAT_R32G32B32_SFLOAT
+                                         , offset = offset1
+                                         } :: VertexInputAttributeDescription
+                                  ]
+
+vertexBufferInfo :: BufferCreateInfo '[]
+vertexBufferInfo = zero { size = ((*) `on` fromIntegral) numVertices sizeVertex
+                        , usage = BUFFER_USAGE_VERTEX_BUFFER_BIT
+                        , sharingMode = SHARING_MODE_EXCLUSIVE
+                        }

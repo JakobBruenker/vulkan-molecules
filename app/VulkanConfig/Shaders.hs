@@ -10,33 +10,34 @@ import FIR.Syntax.Labels
 import Math.Linear
 
 import Data.Foldable (sequence_)
-import Data.Vector.Sized qualified as Vector
 import RIO.FilePath ((</>))
 
-type VertexInput =
-  '[
+type VertexData =
+  '[ Slot 0 0 ':-> V 2 Float
+   , Slot 1 0 ':-> V 3 Float
    ]
 
 type VertexDefs =
-  '[ "pointSize" ':-> Output     '[Location 0] Float
+  '[ "position"  ':-> Input      '[Location 0] (V 2 Float)
+   , "color"     ':-> Input      '[Location 1] (V 3 Float)
+   , "pointSize" ':-> Output     '[Location 0] Float
+   , "vertColor" ':-> Output     '[Location 1] (V 4 Float)
    , "main"      ':-> EntryPoint '[          ] Vertex
    ]
 
 vertex :: ShaderModule "main" VertexShader VertexDefs _
 vertex = shader do
-  positions :: Code (Array 3 (V 4 Float)) <- let' $ Lit . MkArray . Vector.fromTuple $
-    ( V4 0.1 0.1 0 1
-    , V4 0.1 0.8 0 1
-    , V4 0.7 0.8 0 1
-    )
-  sizes :: Code (Array 3 Float) <- let' $ Lit . MkArray . Vector.fromTuple $ (10, 20, 30)
-  vertexID <- #gl_VertexID
-  #gl_Position .= view @(AnIndex _) vertexID positions
-  #pointSize .= view @(AnIndex _) vertexID sizes
-  #gl_PointSize .= view @(AnIndex _) vertexID sizes
+  position <- #position
+  #gl_Position .= Vec4 (view @(Swizzle "x") position) (view @(Swizzle "y") position) 0 0
+  color <- #color
+  #vertColor .=
+    Vec4 (view @(Swizzle "x") color) (view @(Swizzle "y") color) (view @(Swizzle "z") color) 1
+  #pointSize .= 40
+  #gl_PointSize .= 40
 
 type FragmentDefs =
   '[ "pointSize" ':-> Input      '[Location 0     ] Float
+   , "vertColor" ':-> Input      '[Location 1     ] (V 4 Float)
    , "color"     ':-> Output     '[Location 0     ] (V 4 Float)
    , "main"      ':-> EntryPoint '[OriginUpperLeft] Fragment
    ]
@@ -50,8 +51,10 @@ fragment = shader do
   -- Limit alpha to a disk with darkened limb
   #color .= set @(Index 3) (1 - squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1)) col
 
+-- Currently unused. Still points out useful type errors though. You could use
+-- this to interface with the vulkan library to catch even more.
 shaderPipeline :: ShaderPipeline FilePath
-shaderPipeline = ShaderPipeline $ StructInput @VertexInput @Points
+shaderPipeline = ShaderPipeline $ StructInput @VertexData @Points
   :>-> (vertex  , vertPath)
   :>-> (fragment, fragPath)
 

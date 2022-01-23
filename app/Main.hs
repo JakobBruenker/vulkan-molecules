@@ -25,7 +25,7 @@ import Vulkan.CStruct.Extends
 import Vulkan.Zero
 
 import VulkanConfig.Shaders
-import VulkanConfig.Pipeline
+import VulkanConfig.Pipeline as PL
 import Graphics.Initialize
 import Graphics.Mutables
 import Types
@@ -49,6 +49,9 @@ runApp = runResourceT do
   logDebug "Compiled shaders."
 
   let ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
+      ?vertexInputInfo = vertexInputInfo
+      ?vertexBufferInfo = vertexBufferInfo
+      ?vertexData = PL.vertexData
   Dict <- initializeVulkan setupGraphicsCommands
 
   mainLoop
