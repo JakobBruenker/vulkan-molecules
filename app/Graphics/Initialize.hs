@@ -275,8 +275,7 @@ initVertexBuffer = do
   logDebug "Created vertex buffer."
   pure Dict
 
-initializeVulkan :: ( HasLogger, HasConfig, HasGraphicsPipelineLayoutInfo
-                    , HasVertexBufferInfo, HasVertexInputInfo, HasVertexData)
+initializeVulkan :: (HasLogger, HasConfig, HasShaderPaths, HasVulkanConfig)
                  => (HasVulkanResources => ResIO ()) -> ResIO (Dict HasVulkanResources)
 initializeVulkan setupGraphicsCommands = do
   Dict <- initGLFW

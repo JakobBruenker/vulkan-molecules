@@ -48,10 +48,8 @@ runApp = runResourceT do
   liftIO compileAllShaders
   logDebug "Compiled shaders."
 
-  let ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
-      ?vertexInputInfo = vertexInputInfo
-      ?vertexBufferInfo = vertexBufferInfo
-      ?vertexData = PL.vertexData
+  Dict <- pure shaderPaths
+  Dict <- pure vulkanConfig
   Dict <- initializeVulkan setupGraphicsCommands
 
   mainLoop

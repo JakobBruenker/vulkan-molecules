@@ -27,18 +27,16 @@ import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 
 import Types
 import Utils
-import VulkanConfig.Shaders (vertPath, fragPath)
 import Data.Tuple.Extra (dupe)
 
-initMutables :: (HasLogger, HasGraphicsResources, HasGraphicsPipelineLayoutInfo, HasVertexInputInfo)
+initMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig)
              => ResIO (Dict HasMutables)
 initMutables = do
   mutables <- mkMResources =<< constructMutables
   let ?mutables = mutables
   pure Dict
 
-constructMutables :: (HasLogger, HasGraphicsResources, HasGraphicsPipelineLayoutInfo
-                     , HasVertexInputInfo)
+constructMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig)
                   => ResIO ([ReleaseKey], Mutables)
 constructMutables = do
   scInfo@(SwapchainCreateInfoKHR{ imageExtent = swapchainExtent
@@ -132,14 +130,14 @@ constructGraphicsPipelineLayout :: HasDevice
 constructGraphicsPipelineLayout layoutInfo = do
   withPipelineLayout ?device layoutInfo Nothing allocate
 
-constructGraphicsPipeline :: ( HasLogger, HasGraphicsResources, HasVertexInputInfo)
+constructGraphicsPipeline :: (HasLogger, HasDevice, HasShaderPaths, HasVulkanConfig)
                           => RenderPass -> Extent2D -> PipelineLayout -> ResIO (ReleaseKey, Pipeline)
 constructGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
   let vertexInputState = Just ?vertexInputInfo
       inputAssemblyState = Just zero{topology = PRIMITIVE_TOPOLOGY_POINT_LIST}
       viewport = zero{ width = fromIntegral width
                      , height = fromIntegral height
-                     , minDepth  =0
+                     , minDepth = 0
                      , maxDepth = 1
                      }
       scissor = zero{extent} :: Rect2D
@@ -170,8 +168,8 @@ constructGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
                                               , attachments = [blendAttachment]
                                               }
 
-  (releaseVert, vertModule) <- loadShader vertPath
-  (releaseFrag, fragModule) <- loadShader fragPath
+  (releaseVert, vertModule) <- loadShader ?vertexShaderPath
+  (releaseFrag, fragModule) <- loadShader ?fragmentShaderPath
 
   let vertShaderStageInfo = zero{ stage = SHADER_STAGE_VERTEX_BIT
                                 , module' = vertModule

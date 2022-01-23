@@ -81,3 +81,10 @@ vertexBufferInfo = zero { size = ((*) `on` fromIntegral) numVertices sizeVertex
                         , usage = BUFFER_USAGE_VERTEX_BUFFER_BIT
                         , sharingMode = SHARING_MODE_EXCLUSIVE
                         }
+
+vulkanConfig :: Dict HasVulkanConfig
+vulkanConfig = Dict
+  where ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
+        ?vertexInputInfo = vertexInputInfo
+        ?vertexBufferInfo = vertexBufferInfo
+        ?vertexData = VulkanConfig.Pipeline.vertexData

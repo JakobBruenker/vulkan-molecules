@@ -182,23 +182,33 @@ type HasSyncs = ( HasImageAvailable
                 )
 
 type HasMutables = ?mutables :: MResources Mutables
+
+type HasVertexShaderPath   = ?vertexShaderPath   :: FilePath
+type HasFragmentShaderPath = ?fragmentShaderPath :: FilePath
+type HasShaderPaths = ( HasVertexShaderPath
+                      , HasFragmentShaderPath
+                      )
+
 type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
 type HasVertexInputInfo = ?vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
 type HasVertexBufferInfo = ?vertexBufferInfo :: BufferCreateInfo '[]
-type HasVertexBuffer = ?vertexBuffer :: Buffer
 type HasVertexData = ?vertexData :: SVector Float
-type HasVulkanResources =
-  ( HasMutables
-  , HasGraphicsResources
-  , HasGraphicsPipelineLayoutInfo
-  , HasVertexInputInfo
-  , HasVertexBufferInfo
-  , HasVertexBuffer
-  , HasSyncs
-  )
+type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
+                       , HasVertexInputInfo
+                       , HasVertexBufferInfo
+                       , HasVertexData
+                       )
 
-type HasApp =
-  ( HasConfig
-  , HasLogger
-  , HasVulkanResources
-  )
+type HasVertexBuffer = ?vertexBuffer :: Buffer
+type HasVulkanResources = ( HasGraphicsResources
+                          , HasMutables
+                          , HasVertexBuffer
+                          , HasShaderPaths
+                          , HasVulkanConfig
+                          , HasSyncs
+                          )
+
+type HasApp = ( HasConfig
+              , HasLogger
+              , HasVulkanResources
+              )

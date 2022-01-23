@@ -12,6 +12,8 @@ import Math.Linear
 import Data.Foldable (sequence_)
 import RIO.FilePath ((</>))
 
+import Types
+
 type VertexData =
   '[ Slot 0 0 ':-> V 2 Float
    , Slot 1 0 ':-> V 3 Float
@@ -31,7 +33,7 @@ vertex = shader do
   color <- #color
   #vertColor .=
     Vec4 (view @(Swizzle "x") color) (view @(Swizzle "y") color) (view @(Swizzle "z") color) 1
-  #gl_PointSize .= 40
+  #gl_PointSize .= 200
 
 type FragmentDefs =
   '[ "vertColor" ':-> Input      '[Location 0     ] (V 4 Float)
@@ -51,17 +53,22 @@ fragment = shader do
 -- this to interface with the vulkan library to catch even more.
 shaderPipeline :: ShaderPipeline FilePath
 shaderPipeline = ShaderPipeline $ StructInput @VertexData @Points
-  :>-> (vertex  , vertPath)
-  :>-> (fragment, fragPath)
+  :>-> (vertex  , vertexShaderPath  )
+  :>-> (fragment, fragmentShaderPath)
 
-shadersPath, vertPath, fragPath :: FilePath
+shadersPath, vertexShaderPath, fragmentShaderPath :: FilePath
 shadersPath = "shaders"
-vertPath = shadersPath </> "vert.spv"
-fragPath = shadersPath </> "frag.spv"
+vertexShaderPath   = shadersPath </> "vert.spv"
+fragmentShaderPath = shadersPath </> "frag.spv"
+
+shaderPaths :: Dict HasShaderPaths
+shaderPaths = Dict
+  where ?vertexShaderPath = vertexShaderPath
+        ?fragmentShaderPath = fragmentShaderPath
 
 compileAllShaders :: IO ()
 compileAllShaders = sequence_
-  [ compileTo vertPath spirv vertex
-  , compileTo fragPath spirv fragment
+  [ compileTo vertexShaderPath spirv vertex
+  , compileTo fragmentShaderPath spirv fragment
   ]
   where spirv = [SPIRV $ Version 1 0]
