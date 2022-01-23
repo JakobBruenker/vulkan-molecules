@@ -18,11 +18,12 @@ import Utils
 import Foreign (sizeOf)
 
 -- This can probably be improved
-numVertices, offset0, offset1, sizeVertex :: Word32
+floatSize, numVertices, offset0, offset1, sizeVertex :: Word32
+floatSize = fromIntegral $ sizeOf (0.0 :: Float)
 numVertices = 5
-offset0 = 0
-offset1 = 2
-sizeVertex = 5 * fromIntegral (sizeOf (0.0 :: Float))
+offset0 = 0 * floatSize
+offset1 = 2 * floatSize
+sizeVertex = 5 * floatSize
 
 -- Could probably do SVector (SVector Float), would be nicer.
 -- We'd have to have an existential type for ?vertexData.
