@@ -25,8 +25,9 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 
-import Types
+import Graphics.Types
 import Utils
+import Graphics.Utils
 import Data.Tuple.Extra (dupe)
 
 initMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig)

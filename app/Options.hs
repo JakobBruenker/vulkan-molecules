@@ -4,7 +4,16 @@ import RIO
 
 import Options.Applicative
 
-import Types
+import Graphics.Types
+
+data Options = MkOptions { optWidth            :: Natural
+                         , optHeight           :: Natural
+                         , optFullscreen       :: Bool
+                         , optMonitorIndex     :: Natural
+                         , optVerbose          :: Bool
+                         , optValidationLayers :: Bool
+                         }
+
 
 mkConfig :: Options -> Dict HasConfig
 mkConfig (MkOptions{..}) = Dict

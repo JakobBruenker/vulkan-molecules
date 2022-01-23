@@ -12,23 +12,31 @@ import Math.Linear
 import Data.Foldable (sequence_)
 import RIO.FilePath ((</>))
 
-import Types
+import Graphics.Types
 
 type VertexData =
   '[ Slot 0 0 ':-> V 2 Float
    , Slot 1 0 ':-> V 3 Float
    ]
 
+type UniformData = Struct
+  '[ "time" ':-> Float
+   ]
+
 type VertexDefs =
-  '[ "position"  ':-> Input      '[Location 0] (V 2 Float)
-   , "color"     ':-> Input      '[Location 1] (V 3 Float)
-   , "vertColor" ':-> Output     '[Location 0] (V 4 Float)
-   , "main"      ':-> EntryPoint '[          ] Vertex
+  '[ "position"  ':-> Input      '[Location 0                ] (V 2 Float)
+   , "color"     ':-> Input      '[Location 1                ] (V 3 Float)
+   , "vertColor" ':-> Output     '[Location 0                ] (V 4 Float)
+   , "ubo"       ':-> Uniform    '[Binding 0, DescriptorSet 0] UniformData
+   , "main"      ':-> EntryPoint '[                          ] Vertex
    ]
 
 vertex :: ShaderModule "main" VertexShader VertexDefs _
 vertex = shader do
+  -- ubo <- #ubo
+  -- time <- let' $ view @(Name "time") ubo
   position <- #position
+  -- #gl_Position .= Vec4 (view @(Swizzle "x") position - time / 100) (view @(Swizzle "y") position) 0 1
   #gl_Position .= Vec4 (view @(Swizzle "x") position) (view @(Swizzle "y") position) 0 1
   color <- #color
   #vertColor .=

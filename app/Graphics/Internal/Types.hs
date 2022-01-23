@@ -1,6 +1,6 @@
 {-# OPTIONS_HADDOCK not-home #-}
 
-module Internal.Types where
+module Graphics.Internal.Types where
 
 import RIO
 import RIO.ByteString qualified as B
@@ -59,15 +59,6 @@ instance Display AppException where
     VkCommandBufferIndexOutOfRange -> "Vulkan requested a command buffer with" <>
       " a higher index than available."
     VkNoSuitableMemoryType -> "Coludn't find a suitable memory type for Vulkan buffer creation."
-
-data Options = MkOptions { optWidth            :: Natural
-                         , optHeight           :: Natural
-                         , optFullscreen       :: Bool
-                         , optMonitorIndex     :: Natural
-                         , optVerbose          :: Bool
-                         , optValidationLayers :: Bool
-                         }
-
 -- abstract type to keep track of whether GLFW is initialized
 data GLFWToken = UnsafeMkGLFWToken
 
@@ -197,10 +188,12 @@ type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayo
 type HasVertexInputInfo = ?vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
 type HasVertexBufferInfo = ?vertexBufferInfo :: BufferCreateInfo '[]
 type HasVertexData = ?vertexData :: SVector Float
+type HasDescriptorSetLayout = ?descriptorSetLayout :: Vector DescriptorSetLayoutBinding
 type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
                        , HasVertexInputInfo
                        , HasVertexBufferInfo
                        , HasVertexData
+                       , HasDescriptorSetLayout
                        )
 
 type HasVertexBuffer = ?vertexBuffer :: Buffer

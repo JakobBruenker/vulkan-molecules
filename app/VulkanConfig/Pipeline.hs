@@ -13,7 +13,7 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
-import Types
+import Graphics.Types
 import Utils
 import Foreign (sizeOf, (.|.))
 
@@ -82,9 +82,17 @@ vertexBufferInfo = zero { size = ((*) `on` fromIntegral) numVertices sizeVertex
                         , sharingMode = SHARING_MODE_EXCLUSIVE
                         }
 
+descriptorSetLayout :: Vector DescriptorSetLayoutBinding
+descriptorSetLayout = [ zero{ binding = 0
+                            , descriptorType = DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                            , descriptorCount = 1
+                            }
+                      ]
+
 vulkanConfig :: Dict HasVulkanConfig
 vulkanConfig = Dict
   where ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
         ?vertexInputInfo = vertexInputInfo
         ?vertexBufferInfo = vertexBufferInfo
         ?vertexData = VulkanConfig.Pipeline.vertexData
+        ?descriptorSetLayout = VulkanConfig.Pipeline.descriptorSetLayout

@@ -28,7 +28,7 @@ import VulkanConfig.Shaders
 import VulkanConfig.Pipeline as PL
 import Graphics.Initialize
 import Graphics.Mutables
-import Types
+import Graphics.Types
 import Options
 import Utils
 
@@ -71,7 +71,7 @@ mainLoop = do
     unlessM ?? loop (currentFrame + 1) $ liftIO $ GLFW.windowShouldClose ?window
 
   -- Allow queues/buffers to finish their job
-  deviceWaitIdleSafe ?device
+  deviceWaitIdle ?device
 
 drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecreateSwapchain
 drawFrame currentFrame = do

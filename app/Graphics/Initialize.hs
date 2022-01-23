@@ -35,11 +35,12 @@ import Vulkan.Zero
 import Vulkan.CStruct.Extends
 import Vulkan.Exception
 
-import Internal.Types(GLFWToken(UnsafeMkGLFWToken))
+import Graphics.Internal.Types(GLFWToken(UnsafeMkGLFWToken))
 
 import Graphics.Mutables
 import Utils
-import Types
+import Graphics.Utils
+import Graphics.Types
 
 initGLFW :: HasLogger => ResIO (Dict HasGLFW)
 initGLFW = do
@@ -73,6 +74,8 @@ initInstance = do
   logDebug "Created instance."
   pure Dict
 
+-- FIXME: when you have two monitors your focus is on the smaller monitor, a
+-- fullscreen window will be too small (with X11).
 initWindow :: (HasLogger, HasConfig, HasGLFW) => ResIO (Dict (HasWindow, HasFramebufferResized))
 initWindow = do
   !_ <- pure ?glfw -- making sure GLFW really is initialized
@@ -243,6 +246,8 @@ initCommandPool = do
   logDebug "Created command pool."
   pure Dict
 
+-- TODO: combine buffers and allocations into single buffers and use offsets to
+-- bind, where it makes sense
 constructBuffer :: (HasPhysicalDevice, HasDevice)
                 => BufferCreateInfo '[] -> MemoryPropertyFlags
                 -> ResIO ((ReleaseKey, Buffer), (ReleaseKey, DeviceMemory))
