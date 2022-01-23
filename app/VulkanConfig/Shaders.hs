@@ -33,7 +33,7 @@ vertex = shader do
   color <- #color
   #vertColor .=
     Vec4 (view @(Swizzle "x") color) (view @(Swizzle "y") color) (view @(Swizzle "z") color) 1
-  #gl_PointSize .= 200
+  #gl_PointSize .= 40
 
 type FragmentDefs =
   '[ "vertColor" ':-> Input      '[Location 0     ] (V 4 Float)

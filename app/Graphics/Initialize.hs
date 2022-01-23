@@ -11,7 +11,7 @@ import RIO.Vector.Storable.Unsafe qualified as VS
 
 import Control.Lens ((??), ix)
 import Control.Monad.Extra (fromMaybeM, ifM, maybeM)
-import Data.Bits (Bits((.&.)), testBit, (.|.))
+import Data.Bits (Bits((.&.)), testBit, (.|.), xor)
 import System.Environment (getProgName)
 import Control.Applicative (ZipList(..))
 import Control.Monad.Trans.Maybe (runMaybeT, MaybeT)
@@ -256,7 +256,9 @@ initVertexBuffer = do
 
   let properties = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
       memoryType = ifind ?? memoryTypes $ \i MemoryType{propertyFlags} ->
-        testBit memoryTypeBits i && (propertyFlags .&. properties > zero)
+        testBit memoryTypeBits i &&
+        -- check whether all properties are set
+        ((propertyFlags `xor` properties) .&. properties == zero)
 
   memoryTypeIndex <- maybe (throwIO VkNoSuitableMemoryType) (pure . fromIntegral . fst) memoryType
 
