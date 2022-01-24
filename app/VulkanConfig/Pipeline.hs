@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE MagicHash #-}
 
 module VulkanConfig.Pipeline where
 
@@ -6,7 +7,8 @@ import RIO hiding (logInfo, logWarn, logError, logDebug)
 import Data.Vector.Storable.Sized qualified as Sized
 
 import Foreign.Storable.Tuple ()
-import GHC.TypeNats (type (*))
+import Foreign (sizeOf, (.|.))
+import GHC.Exts (proxy#)
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , IOSSurfaceCreateInfoMVK(view)
@@ -19,18 +21,16 @@ import Vulkan.CStruct.Extends
 
 import Graphics.Types
 import Utils
-import Foreign (sizeOf, (.|.))
 
 type SizeFloat = 4
-type UniformBufferSize = 1 * SizeFloat
 
 type NumVertexEntries = 5
-type NumVertices = 6
+type NumVertices = 7
 type Size0 = 2
 type Size1 = 3
 
 numVertices, floatSize, vertexSize, offset0, offset1 :: Word32
-numVertices = integralNatVal @NumVertices
+numVertices = fromIntegral $ Sized.length VulkanConfig.Pipeline.vertexData
 floatSize = fromIntegral $ sizeOf (0 :: Float)
 vertexSize = floatSize * integralNatVal @NumVertexEntries
 offset0 = 0
@@ -39,7 +39,8 @@ offset1 = floatSize * (integralNatVal @NumVertexEntries - integralNatVal @Size1)
 -- 2D position, RGB color
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Sized.Vector Size1 Float)
 vertexData = Sized.fromTuple
-  ( vertex ( 0.1,  0.2) ( 0.3,  0.4,  0.5)
+  ( vertex ( 0  ,  0  ) ( 0  ,  0  ,  1  )
+  , vertex ( 0.1,  0.2) ( 0.3,  0.4,  0.5)
   , vertex ( 0.2,  0.3) ( 0.4,  0.5,  0.6)
   , vertex ( 0.3,  0.4) ( 0.5,  0.6,  0.7)
   , vertex ( 0.4,  0.5) ( 0.6,  0.7,  0.8)
@@ -47,6 +48,13 @@ vertexData = Sized.fromTuple
   , vertex (-0.2,  0.6) ( 1  ,  0.1,  0  )
   )
   where vertex (a, b) (c, d, e) = (Sized.fromTuple (a, b), Sized.fromTuple (c, d, e))
+
+type UboContents = ("time" ::: Float, "window width" ::: Int32, "window height" ::: Int32)
+type instance UboInput = ("window width" ::: Int32, "window height" ::: Int32)
+
+uboData :: MonadIO m => m UboData
+uboData = MkUboData proxy# (\(w, h) (i, _, _) -> (i + 1, w, h)) <$>
+  newIORef @_ @UboContents (0, 0, 0)
 
 setupGraphicsCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupGraphicsCommands = do
@@ -108,18 +116,15 @@ descriptorSetLayoutInfo = zero{bindings = descriptorSetBindings}
                                   }
                             ]
 
-uboData :: MonadIO m => m UboData
-uboData = MkUboData (+ 1) <$> newIORef @_ @Float 0
-
 vulkanConfig :: MonadIO m => m (Dict HasVulkanConfig)
 vulkanConfig = do
-  uboData' <- uboData
+  uboData'@(MkUboData uboProxy _ _) <- uboData
   let ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
       ?vertexInputInfo = vertexInputInfo
       ?vertexBufferInfo = vertexBufferInfo
       ?vertexData = MkVertexData VulkanConfig.Pipeline.vertexData
       ?descriptorSetLayoutInfo = descriptorSetLayoutInfo
-      ?uniformBufferSize = integralNatVal @UniformBufferSize
+      ?uniformBufferSize = fromIntegral $ sizeOfProxied uboProxy
       ?desiredSwapchainImageNum = 3
       ?uboData = uboData'
   pure Dict

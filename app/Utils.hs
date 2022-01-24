@@ -5,8 +5,9 @@ module Utils where
 
 import RIO
 
-import GHC.TypeNats(KnownNat, natVal')
-import GHC.Exts(proxy#)
+import GHC.TypeNats (KnownNat, natVal')
+import GHC.Exts (proxy#, Proxy#)
+import Foreign.Storable (sizeOf)
 
 import Graphics.Types
 
@@ -24,3 +25,6 @@ logError = flip runReaderT ?logFunc . RIO.logError
 
 integralNatVal :: forall n a . (KnownNat n, Integral a) => a
 integralNatVal = fromIntegral $ natVal' (proxy# @n)
+
+sizeOfProxied :: forall a . Storable a => Proxy# a -> Int
+sizeOfProxied _ = sizeOf (error "evaluated sizeOf argument" :: a)

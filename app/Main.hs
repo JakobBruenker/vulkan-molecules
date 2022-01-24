@@ -9,8 +9,9 @@ import Control.Monad.Trans.Resource (runResourceT, ResIO)
 import Data.Finite (Finite, natToFinite)
 import qualified Data.Vector.Storable.Sized as Sized
 import Control.Monad.Extra (fromMaybeM, whenJust)
-import Control.Lens (ix, (??))
+import Control.Lens (ix, (??), both)
 import Data.Tuple.Extra (dupe)
+import Foreign (castPtr, with, copyBytes)
 
 import qualified Graphics.UI.GLFW as GLFW
 
@@ -32,7 +33,6 @@ import Graphics.Mutables
 import Graphics.Types
 import Options
 import Utils
-import Foreign (castPtr, with, copyBytes)
 
 main :: IO ()
 main = do
@@ -69,7 +69,8 @@ mainLoop = do
       ex -> throwIO ex
     resized <- readIORef ?framebufferResized
     when (resized || shouldRecreate == PleaseRecreate) $ recreateSwapchain setupGraphicsCommands
-    liftIO GLFW.waitEvents
+    -- TODO I don't think this is actually a reliable way to set the framerate
+    liftIO $ GLFW.waitEventsTimeout 0.004
 
     unlessM ?? loop (currentFrame + 1) $ liftIO $ GLFW.windowShouldClose ?window
 
@@ -100,7 +101,8 @@ drawFrame currentFrame = do
   -- Mark the image as now being in use by this frame
   writeIORef imageInFlight (Just $ ixSync ?inFlight)
 
-  updateUniformBuffer imageIndex
+  (windowWidth, windowHeight) <- over both fromIntegral <$> liftIO (GLFW.getFramebufferSize ?window)
+  updateUniformBuffer imageIndex windowWidth windowHeight
 
   let submitInfo = pure . SomeStruct $
         SubmitInfo{ next = ()
@@ -127,10 +129,10 @@ drawFrame currentFrame = do
 -- FIXME: the combination of the -lvf flags and calling updateUniformBuffer results in
 -- segfault after a few seconds of window events
 updateUniformBuffer :: (MonadUnliftIO m, HasDevice, HasUboData, HasUniformBuffers, HasUniformBufferSize)
-                    => ("index" ::: Word32) -> m ()
-updateUniformBuffer currentImageIndex = do
+                    => Word32 -> Int32 -> Int32 -> m ()
+updateUniformBuffer currentImageIndex windowWidth windowHeight = do
   MkUboData{uboUpdate, uboRef} <- pure ?uboData
-  time <- atomicModifyIORef' uboRef (dupe . uboUpdate)
+  time <- atomicModifyIORef' uboRef (dupe . uboUpdate (windowWidth, windowHeight))
   memory <- maybe
     do throwIO VkUniformBufferIndexOutOfRange
     do pure . snd

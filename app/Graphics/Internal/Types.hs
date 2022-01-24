@@ -1,5 +1,7 @@
 {-# OPTIONS_HADDOCK not-home #-}
 
+{-# LANGUAGE MagicHash #-}
+
 module Graphics.Internal.Types where
 
 import RIO
@@ -17,6 +19,7 @@ import Vulkan hiding ( Display
 
 import Vulkan.CStruct.Extends
 import GHC.TypeNats (KnownNat)
+import GHC.Exts (Proxy#)
 
 type MaxFramesInFlight = 2
 
@@ -191,8 +194,11 @@ type HasShaderPaths = ( HasVertexShaderPath
                       , HasFragmentShaderPath
                       )
 
+type family UboInput
+
 data VertexData = forall a n . (KnownNat n, Storable a) => MkVertexData (Sized.Vector n a)
-data UboData = forall a . Storable a => MkUboData { uboUpdate :: a -> a
+data UboData = forall a . Storable a => MkUboData { uboProxy  :: Proxy# a
+                                                  , uboUpdate :: UboInput -> a -> a
                                                   , uboRef    :: IORef a
                                                   }
 

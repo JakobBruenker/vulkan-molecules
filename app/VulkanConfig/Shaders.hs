@@ -20,7 +20,9 @@ type VertexInput =
    ]
 
 type UniformInput = Struct
-  '[ "time" ':-> Float
+  '[ "time"         ':-> Float
+   , "windowWidth"  ':-> Int32
+   , "windowHeight" ':-> Int32
    ]
 
 type VertexDefs =
@@ -35,15 +37,18 @@ vertex :: ShaderModule "main" VertexShader VertexDefs _
 vertex = shader do
   ubo <- #ubo
   time <- let' $ view @(Name "time") ubo
-  phi <- let' $ time / 1000
+  windowWidth <- let' $ view @(Name "windowWidth") ubo
+  windowHeight <- let' $ view @(Name "windowHeight") ubo
+
+  phi <- let' $ time / 100
   position <- #position
-  scl <- let' $ Mat22 (9 / 16) 0 0 1
+  scl <- let' $ Mat22 (fromIntegral windowHeight / fromIntegral windowWidth) 0 0 1
   rot <- let' $ Mat22 (cos phi) (sin phi) (-(sin phi)) (cos phi)
   pos' <- let' $ (scl !*! rot) !*^ position
   #gl_Position .= Vec4 (view @(Swizzle "x") pos') (view @(Swizzle "y") pos') 0 1
   color <- #color
   #vertColor .=
-    Vec4 (view @(Swizzle "x") color) (view @(Swizzle "y") color) (view @(Swizzle "z") color) 1
+    Vec4 (view @(Swizzle "x") color) (view @(Swizzle "y") color) (view @(Swizzle "z") color) 0.3
   #gl_PointSize .= 40
 
 type FragmentDefs =
