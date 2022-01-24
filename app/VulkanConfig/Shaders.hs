@@ -37,8 +37,9 @@ vertex = shader do
   time <- let' $ view @(Name "time") ubo
   phi <- let' $ time / 1000
   position <- #position
+  scl <- let' $ Mat22 (9 / 16) 0 0 1
   rot <- let' $ Mat22 (cos phi) (sin phi) (-(sin phi)) (cos phi)
-  pos' <- let' $ rot !*^ position
+  pos' <- let' $ (scl !*! rot) !*^ position
   #gl_Position .= Vec4 (view @(Swizzle "x") pos') (view @(Swizzle "y") pos') 0 1
   color <- #color
   #vertColor .=

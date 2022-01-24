@@ -3,7 +3,6 @@
 module Main (main) where
 
 import RIO hiding (logDebug, logInfo, logWarn, logError)
-import RIO.Vector qualified as V
 
 import Options.Applicative
 import Control.Monad.Trans.Resource (runResourceT, ResIO)
@@ -125,6 +124,8 @@ drawFrame currentFrame = do
   pure if | elem @[] SUBOPTIMAL_KHR [imageResult, queueResult] -> PleaseRecreate
           | otherwise -> Don'tRecreate
 
+-- FIXME: the combination of the -lvf flags and calling updateUniformBuffer results in
+-- segfault after a few seconds of window events
 updateUniformBuffer :: (MonadUnliftIO m, HasDevice, HasUboData, HasUniformBuffers, HasUniformBufferSize)
                     => ("index" ::: Word32) -> m ()
 updateUniformBuffer currentImageIndex = do
@@ -136,4 +137,4 @@ updateUniformBuffer currentImageIndex = do
     do ?uniformBuffers^?ix (fromIntegral currentImageIndex)
   withMappedMemory ?device memory 0 ?uniformBufferSize zero bracket \target ->
     liftIO $ with time \(castPtr -> source) ->
-      copyBytes target source $ V.length ?uniformBuffers * fromIntegral ?uniformBufferSize
+      copyBytes target source $ fromIntegral ?uniformBufferSize
