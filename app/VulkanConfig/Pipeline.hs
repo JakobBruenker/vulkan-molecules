@@ -6,6 +6,7 @@ import RIO hiding (logInfo, logWarn, logError, logDebug)
 import Data.Vector.Storable.Sized qualified as Sized
 
 import Foreign.Storable.Tuple ()
+import GHC.TypeNats (type (*))
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , IOSSurfaceCreateInfoMVK(view)
@@ -20,7 +21,8 @@ import Graphics.Types
 import Utils
 import Foreign (sizeOf, (.|.))
 
-type UniformBufferSize = 1
+type SizeFloat = 4
+type UniformBufferSize = 1 * SizeFloat
 
 type NumVertexEntries = 5
 type NumVertices = 6

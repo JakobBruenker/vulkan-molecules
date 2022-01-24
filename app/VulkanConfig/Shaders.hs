@@ -35,8 +35,11 @@ vertex :: ShaderModule "main" VertexShader VertexDefs _
 vertex = shader do
   ubo <- #ubo
   time <- let' $ view @(Name "time") ubo
+  phi <- let' $ time / 1000
   position <- #position
-  #gl_Position .= Vec4 (view @(Swizzle "x") position - time / 100) (view @(Swizzle "y") position) 0 1
+  rot <- let' $ Mat22 (cos phi) (sin phi) (-(sin phi)) (cos phi)
+  pos' <- let' $ rot !*^ position
+  #gl_Position .= Vec4 (view @(Swizzle "x") pos') (view @(Swizzle "y") pos') 0 1
   color <- #color
   #vertColor .=
     Vec4 (view @(Swizzle "x") color) (view @(Swizzle "y") color) (view @(Swizzle "z") color) 1
@@ -54,7 +57,7 @@ fragment = shader do
   col <- #vertColor
 
   -- Limit alpha to a disk with darkened limb
-  #color .= set @(Index 3) (1 - squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1)) col
+  #color .= over @(Index 3) (* (1 - squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1))) col
 
 -- Currently unused. Still points out useful type errors though. You could use
 -- this to interface with the vulkan library to catch even more.

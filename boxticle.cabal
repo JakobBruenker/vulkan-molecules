@@ -90,6 +90,7 @@ executable boxticle
                         MultiParamTypeClasses,
                         MultiWayIf,
                         NamedFieldPuns,
+                        NoStarIsType,
                         NoImplicitPrelude,
                         OverloadedLabels,
                         OverloadedStrings,
