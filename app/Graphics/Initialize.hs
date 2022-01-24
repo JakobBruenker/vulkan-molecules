@@ -20,6 +20,7 @@ import Data.Coerce (coerce)
 import Data.Foldable (find)
 import Data.List (nub)
 import Foreign (malloc, nullPtr, Storable (peek, sizeOf), copyBytes, castPtr)
+import Foreign.Storable.Tuple ()
 import Data.List.NonEmpty.Extra (maximumOn1)
 import Control.Lens.Combinators (ifind)
 
@@ -41,6 +42,7 @@ import Graphics.Mutables
 import Utils
 import Graphics.Utils
 import Graphics.Types
+import qualified Data.Vector.Storable.Sized as Sized
 
 initGLFW :: HasLogger => ResIO (Dict HasGLFW)
 initGLFW = do
@@ -301,11 +303,13 @@ initVertexBuffer = do
       stagingBufProps = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
       BufferCreateInfo{size = bufferSize} = ?vertexBufferInfo
 
-  ((sBufKey, stagingBuffer), (sMemKey, stagingMemory)) <- constructBuffer stagingBufInfo stagingBufProps
+  ((sBufKey, stagingBuffer), (sMemKey, stagingMemory)) <-
+    constructBuffer stagingBufInfo stagingBufProps
 
-  liftIO $ withMappedMemory ?device stagingMemory 0 bufferSize zero bracket \(castPtr -> target) ->
-    VS.unsafeWith ?vertexData \source -> do
-      copyBytes target source $ V.length ?vertexData * sizeOf (VS.head ?vertexData)
+  liftIO $ withMappedMemory ?device stagingMemory 0 bufferSize zero bracket \target -> do
+    MkVertexData vertexData <- pure ?vertexData
+    VS.unsafeWith (Sized.SomeSized vertexData) \(castPtr -> source) ->
+      copyBytes target source $ Sized.length vertexData * sizeOf (VS.head $ Sized.SomeSized vertexData)
 
   let vertBufProps = MEMORY_PROPERTY_DEVICE_LOCAL_BIT
   ((_, vertexBuffer), _) <- constructBuffer ?vertexBufferInfo vertBufProps
@@ -317,6 +321,36 @@ initVertexBuffer = do
   traverse_ @[] release [sBufKey, sMemKey]
 
   logDebug "Created vertex buffer."
+  pure Dict
+
+initUniformBuffers :: (HasLogger, HasSurface, HasPhysicalDevice, HasDevice, HasUniformBufferSize,
+                       HasDesiredSwapchainImageNum)
+                   => ResIO (Dict HasUniformBuffers)
+initUniformBuffers = do
+  SurfaceCapabilitiesKHR{minImageCount} <-
+    getPhysicalDeviceSurfaceCapabilitiesKHR ?physicalDevice ?surface
+
+  -- We need at least as many buffers as we have images
+  let numBuffers = max (fromIntegral minImageCount) (fromIntegral ?desiredSwapchainImageNum)
+      bufInfo = zero{ size = ?uniformBufferSize
+                    , usage = BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                    , sharingMode = SHARING_MODE_EXCLUSIVE
+                    } :: BufferCreateInfo '[]
+      properties = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
+  buffers <- V.replicateM numBuffers do
+    ((_, buffer), (_, memory)) <- constructBuffer bufInfo properties
+    pure (buffer, memory)
+  let ?uniformBuffers = buffers
+
+  logDebug "Created uniform buffers."
+
+  pure Dict
+
+initDescriptorSetLayout :: (HasDevice, HasDescriptorSetLayoutInfo)
+                        => ResIO (Dict HasDescriptorSetLayout)
+initDescriptorSetLayout = do
+  (_, layout) <- withDescriptorSetLayout ?device ?descriptorSetLayoutInfo Nothing allocate
+  let ?descriptorSetLayout = layout
   pure Dict
 
 initializeVulkan :: (HasLogger, HasConfig, HasShaderPaths, HasVulkanConfig)
@@ -332,6 +366,8 @@ initializeVulkan setupGraphicsCommands = do
   Dict <- initQueues
   Dict <- initCommandPool
   Dict <- initVertexBuffer
+  Dict <- initUniformBuffers
+  Dict <- initDescriptorSetLayout
   Dict <- initMutables
   Dict <- initSyncs
 

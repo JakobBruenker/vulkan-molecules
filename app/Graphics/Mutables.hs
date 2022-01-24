@@ -6,13 +6,14 @@ import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.Vector qualified as V
 import RIO.NonEmpty qualified as NE
 
-import Control.Lens (both, allOf)
+import Control.Lens (both, allOf, ifor_, Ixed (ix))
 import Data.Bits ((.|.))
 import Data.Foldable (find)
 import Data.List (nub)
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, ResIO)
-
-import Data.Vector.Sized qualified as Sized
+import Data.Vector.Storable.Sized qualified as Sized
+import Data.Tuple.Extra (dupe)
+import Foreign.Storable.Tuple ()
 
 import Graphics.UI.GLFW qualified as GLFW
 
@@ -28,16 +29,16 @@ import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 import Graphics.Types
 import Utils
 import Graphics.Utils
-import Data.Tuple.Extra (dupe)
 
-initMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig)
+initMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig, HasUniformBuffers)
              => ResIO (Dict HasMutables)
 initMutables = do
   mutables <- mkMResources =<< constructMutables
   let ?mutables = mutables
   pure Dict
 
-constructMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig)
+constructMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
+                      HasUniformBuffers)
                   => ResIO ([ReleaseKey], Mutables)
 constructMutables = do
   scInfo@(SwapchainCreateInfoKHR{ imageExtent = swapchainExtent
@@ -67,7 +68,8 @@ waitWhileMinimized = do
     dimensions <- liftIO (GLFW.getFramebufferSize ?window)
     when (allOf both (== 0) dimensions) $ liftIO GLFW.waitEvents *> loop
 
-swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources) => m (SwapchainCreateInfoKHR '[])
+swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources, HasDesiredSwapchainImageNum)
+                    => m (SwapchainCreateInfoKHR '[])
 swapchainCreateInfo = do
 
   waitWhileMinimized
@@ -94,8 +96,8 @@ swapchainCreateInfo = do
 
   let imageSharingMode | length queueFamilyIndices <= 1 = SHARING_MODE_EXCLUSIVE
                        | otherwise                      = SHARING_MODE_CONCURRENT
-      imageCount = clamp (minImageCount, bool maxBound maxImageCount $ maxImageCount > 0) desired
-        where desired = minImageCount + 1
+      imageCount = clamp (minImageCount, bool maxBound maxImageCount $ maxImageCount > 0) $
+                         fromIntegral ?desiredSwapchainImageNum
       presentModesByPriority = [ PRESENT_MODE_MAILBOX_KHR
                                , PRESENT_MODE_IMMEDIATE_KHR
                                , PRESENT_MODE_FIFO_RELAXED_KHR
@@ -126,10 +128,10 @@ withShader path action = do
   bytes <- readFileBinary path
   withShaderModule ?device zero{code = bytes} Nothing bracket action
 
-constructGraphicsPipelineLayout :: HasDevice
+constructGraphicsPipelineLayout :: (HasDevice, HasDescriptorSetLayout)
                                 => PipelineLayoutCreateInfo -> ResIO (ReleaseKey, PipelineLayout)
 constructGraphicsPipelineLayout layoutInfo = do
-  withPipelineLayout ?device layoutInfo Nothing allocate
+  withPipelineLayout ?device layoutInfo{setLayouts = [?descriptorSetLayout]} Nothing allocate
 
 constructGraphicsPipeline :: (HasLogger, HasDevice, HasShaderPaths, HasVulkanConfig)
                           => RenderPass -> Extent2D -> PipelineLayout -> ResIO (ReleaseKey, Pipeline)
@@ -238,17 +240,20 @@ constructGraphicsRenderPass format = do
   logDebug "Created render pass."
   pure renderPass
 
-constructImageRelateds :: (HasLogger, HasDevice, HasCommandPool)
+constructImageRelateds :: (HasLogger, HasDevice, HasCommandPool,
+                           HasDescriptorSetLayout, HasUniformBufferSize, HasUniformBuffers)
                        => Extent2D -> Format -> RenderPass -> SwapchainKHR
                        -> ResIO ([ReleaseKey], Vector ImageRelated)
 constructImageRelateds extent format renderPass swapchain = do
   (_, images) <- getSwapchainImagesKHR ?device swapchain
-  (cmdBufKey, commandBuffers) <- (constructCommandBuffers . fromIntegral . length) images
-  (releaseKeys, imageRelateds) <- V.unzip <$>
-    V.zipWithM (constructImageRelated extent format renderPass) images commandBuffers
+  let count = fromIntegral $ length images
+  (cmdBufKey, commandBuffers) <- constructCommandBuffers count
+  (dstKey, descriptorSets) <- constructDescriptorSets count
+  (releaseKeys, imageRelateds) <- fmap V.unzip . sequence $
+    V.zipWith3 (constructImageRelated extent format renderPass) images commandBuffers descriptorSets
 
   logDebug "Created images."
-  pure (cmdBufKey : concat releaseKeys, imageRelateds)
+  pure (cmdBufKey : dstKey : concat releaseKeys, imageRelateds)
 
 constructCommandBuffers :: (HasDevice, HasCommandPool)
                         => Natural -> ResIO (ReleaseKey, Vector CommandBuffer)
@@ -259,13 +264,45 @@ constructCommandBuffers count = do
                                }
   withCommandBuffers ?device commandBuffersInfo allocate
 
+constructDescriptorSets :: (HasDevice, HasDescriptorSetLayout, HasUniformBufferSize, HasUniformBuffers)
+                        => Natural -> ResIO (ReleaseKey, Vector DescriptorSet)
+constructDescriptorSets count = do
+  let descriptorCount :: Integral a => a
+      descriptorCount = fromIntegral count
+      poolSize = zero{descriptorCount, type' = DESCRIPTOR_TYPE_UNIFORM_BUFFER}
+      poolInfo = zero{poolSizes = [poolSize], maxSets = descriptorCount}
+  (poolKey, descriptorPool) <- withDescriptorPool ?device poolInfo Nothing allocate
+
+  let allocInfo = zero{descriptorPool, setLayouts = V.replicate descriptorCount ?descriptorSetLayout}
+  descriptorSets <- allocateDescriptorSets ?device allocInfo
+
+  ifor_ descriptorSets \i dstSet -> do
+    buffer <- maybe
+      do throwIO VkUniformBufferIndexOutOfRange
+      do pure . fst
+      do ?uniformBuffers^?ix i
+    let bufferInfo = [ zero{ buffer
+                           , offset = 0
+                           , range = ?uniformBufferSize
+                           } :: DescriptorBufferInfo
+                     ]
+        descriptorWrite = SomeStruct zero{ dstSet
+                                         , dstBinding = 0
+                                         , dstArrayElement = 0
+                                         , descriptorType = DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                         , descriptorCount = 1
+                                         , bufferInfo
+                                         } :: SomeStruct WriteDescriptorSet
+    updateDescriptorSets ?device [descriptorWrite] []
+  pure (poolKey, descriptorSets)
+
 constructImageRelated :: HasDevice
-                      => Extent2D -> Format -> RenderPass -> Image -> CommandBuffer
+                      => Extent2D -> Format -> RenderPass -> Image -> CommandBuffer -> DescriptorSet
                       -> ResIO ([ReleaseKey], ImageRelated)
-constructImageRelated extent format renderPass image commandBuffer = do
-  imageInFlight                <- constructImageInFlight
-  (imgViewKey , imageView    ) <- constructImageView image format
-  (framebufKey, framebuffer  ) <- constructFramebuffer extent renderPass imageView
+constructImageRelated extent format renderPass image commandBuffer descriptorSet = do
+  imageInFlight                 <- constructImageInFlight
+  (imgViewKey , imageView     ) <- constructImageView image format
+  (framebufKey, framebuffer   ) <- constructFramebuffer extent renderPass imageView
   pure ([imgViewKey, framebufKey], MkImageRelated{..})
 
 constructImageInFlight :: MonadIO m => m (IORef (Maybe Fence))

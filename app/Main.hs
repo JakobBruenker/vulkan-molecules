@@ -3,13 +3,15 @@
 module Main (main) where
 
 import RIO hiding (logDebug, logInfo, logWarn, logError)
+import RIO.Vector qualified as V
 
 import Options.Applicative
 import Control.Monad.Trans.Resource (runResourceT, ResIO)
 import Data.Finite (Finite, natToFinite)
-import qualified Data.Vector.Sized as Sized
+import qualified Data.Vector.Storable.Sized as Sized
 import Control.Monad.Extra (fromMaybeM, whenJust)
 import Control.Lens (ix, (??))
+import Data.Tuple.Extra (dupe)
 
 import qualified Graphics.UI.GLFW as GLFW
 
@@ -31,6 +33,7 @@ import Graphics.Mutables
 import Graphics.Types
 import Options
 import Utils
+import Foreign (castPtr, with, copyBytes)
 
 main :: IO ()
 main = do
@@ -49,14 +52,14 @@ runApp = runResourceT do
   logDebug "Compiled shaders."
 
   Dict <- pure shaderPaths
-  Dict <- pure vulkanConfig
+  Dict <- vulkanConfig
   Dict <- initializeVulkan setupGraphicsCommands
 
   mainLoop
 
   logInfo "Goodbye!"
 
-mainLoop :: HasApp => ResIO ()
+mainLoop :: (HasLogger, HasVulkanResources) => ResIO ()
 mainLoop = do
   logDebug "Starting main loop."
   fix ?? natToFinite (Proxy @0) $ \loop currentFrame -> do
@@ -68,6 +71,7 @@ mainLoop = do
     resized <- readIORef ?framebufferResized
     when (resized || shouldRecreate == PleaseRecreate) $ recreateSwapchain setupGraphicsCommands
     liftIO GLFW.waitEvents
+
     unlessM ?? loop (currentFrame + 1) $ liftIO $ GLFW.windowShouldClose ?window
 
   -- Allow queues/buffers to finish their job
@@ -77,7 +81,7 @@ drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecre
 drawFrame currentFrame = do
   MkMutables{swapchain, imageRelateds} <- readRes ?mutables
 
-  let ixSync :: Sized.Vector MaxFramesInFlight a -> a
+  let ixSync :: Storable a => Sized.Vector MaxFramesInFlight a -> a
       ixSync = view $ Sized.ix currentFrame
 
   _result <- waitForFences ?device [ixSync ?inFlight] True maxBound
@@ -96,6 +100,8 @@ drawFrame currentFrame = do
 
   -- Mark the image as now being in use by this frame
   writeIORef imageInFlight (Just $ ixSync ?inFlight)
+
+  updateUniformBuffer imageIndex
 
   let submitInfo = pure . SomeStruct $
         SubmitInfo{ next = ()
@@ -118,3 +124,16 @@ drawFrame currentFrame = do
 
   pure if | elem @[] SUBOPTIMAL_KHR [imageResult, queueResult] -> PleaseRecreate
           | otherwise -> Don'tRecreate
+
+updateUniformBuffer :: (MonadUnliftIO m, HasDevice, HasUboData, HasUniformBuffers, HasUniformBufferSize)
+                    => ("index" ::: Word32) -> m ()
+updateUniformBuffer currentImageIndex = do
+  MkUboData{uboUpdate, uboRef} <- pure ?uboData
+  time <- atomicModifyIORef' uboRef (dupe . uboUpdate)
+  memory <- maybe
+    do throwIO VkUniformBufferIndexOutOfRange
+    do pure . snd
+    do ?uniformBuffers^?ix (fromIntegral currentImageIndex)
+  withMappedMemory ?device memory 0 ?uniformBufferSize zero bracket \target ->
+    liftIO $ with time \(castPtr -> source) ->
+      copyBytes target source $ V.length ?uniformBuffers * fromIntegral ?uniformBufferSize

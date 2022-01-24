@@ -14,12 +14,12 @@ import RIO.FilePath ((</>))
 
 import Graphics.Types
 
-type VertexData =
+type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
    , Slot 1 0 ':-> V 3 Float
    ]
 
-type UniformData = Struct
+type UniformInput = Struct
   '[ "time" ':-> Float
    ]
 
@@ -27,17 +27,16 @@ type VertexDefs =
   '[ "position"  ':-> Input      '[Location 0                ] (V 2 Float)
    , "color"     ':-> Input      '[Location 1                ] (V 3 Float)
    , "vertColor" ':-> Output     '[Location 0                ] (V 4 Float)
-   , "ubo"       ':-> Uniform    '[Binding 0, DescriptorSet 0] UniformData
+   , "ubo"       ':-> Uniform    '[Binding 0, DescriptorSet 0] UniformInput
    , "main"      ':-> EntryPoint '[                          ] Vertex
    ]
 
 vertex :: ShaderModule "main" VertexShader VertexDefs _
 vertex = shader do
-  -- ubo <- #ubo
-  -- time <- let' $ view @(Name "time") ubo
+  ubo <- #ubo
+  time <- let' $ view @(Name "time") ubo
   position <- #position
-  -- #gl_Position .= Vec4 (view @(Swizzle "x") position - time / 100) (view @(Swizzle "y") position) 0 1
-  #gl_Position .= Vec4 (view @(Swizzle "x") position) (view @(Swizzle "y") position) 0 1
+  #gl_Position .= Vec4 (view @(Swizzle "x") position - time / 100) (view @(Swizzle "y") position) 0 1
   color <- #color
   #vertColor .=
     Vec4 (view @(Swizzle "x") color) (view @(Swizzle "y") color) (view @(Swizzle "z") color) 1
@@ -60,7 +59,7 @@ fragment = shader do
 -- Currently unused. Still points out useful type errors though. You could use
 -- this to interface with the vulkan library to catch even more.
 shaderPipeline :: ShaderPipeline FilePath
-shaderPipeline = ShaderPipeline $ StructInput @VertexData @Points
+shaderPipeline = ShaderPipeline $ StructInput @VertexInput @Points
   :>-> (vertex  , vertexShaderPath  )
   :>-> (fragment, fragmentShaderPath)
 

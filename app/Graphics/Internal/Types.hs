@@ -6,7 +6,7 @@ import RIO
 import RIO.ByteString qualified as B
 import RIO.Text qualified as T
 
-import Data.Vector.Sized qualified as Sized
+import Data.Vector.Storable.Sized qualified as Sized
 import Graphics.UI.GLFW qualified as GLFW
 import Control.Monad.Trans.Resource (ReleaseKey, release)
 
@@ -16,6 +16,7 @@ import Vulkan hiding ( Display
                      )
 
 import Vulkan.CStruct.Extends
+import GHC.TypeNats (KnownNat)
 
 type MaxFramesInFlight = 2
 
@@ -31,6 +32,7 @@ data AppException
   | VkWrongNumberOfCommandBuffers ("expected" ::: Natural) ("actual" ::: Natural)
   | VkWrongNumberOfGraphicsPipelines ("expected" ::: Natural) ("actual" ::: Natural)
   | VkCommandBufferIndexOutOfRange
+  | VkUniformBufferIndexOutOfRange
   | VkNoSuitableMemoryType
 
 instance Exception AppException
@@ -57,7 +59,9 @@ instance Display AppException where
       "Wrong number of graphics pipelines was created: Expected " <>
       displayShow expected <> " but got " <> displayShow actual <> "."
     VkCommandBufferIndexOutOfRange -> "Vulkan requested a command buffer with" <>
-      " a higher index than available."
+      " a higher index than was allocated."
+    VkUniformBufferIndexOutOfRange -> "Program requested a uniform buffer with" <>
+      " a higher index than was allocated."
     VkNoSuitableMemoryType -> "Coludn't find a suitable memory type for Vulkan buffer creation."
 -- abstract type to keep track of whether GLFW is initialized
 data GLFWToken = UnsafeMkGLFWToken
@@ -94,6 +98,7 @@ data ImageRelated = MkImageRelated { image         :: Image
                                    , imageView     :: ImageView
                                    , framebuffer   :: Framebuffer
                                    , commandBuffer :: CommandBuffer
+                                   , descriptorSet :: DescriptorSet
                                    }
 
 data Mutables = MkMutables { imageRelateds          :: Vector ImageRelated
@@ -146,14 +151,15 @@ type HasPhysicalDeviceRelated = ( HasPhysicalDevice
                                 , HasSwapchainSupport
                                 )
 
-type HasGLFW               = ?glfw               :: GLFWToken
-type HasWindow             = ?window             :: GLFW.Window
-type HasFramebufferResized = ?framebufferResized :: IORef Bool
-type HasInstance           = ?instance           :: Instance
-type HasValidationLayers   = ?validationLayers   :: Vector ByteString
-type HasDevice             = ?device             :: Device
-type HasSurface            = ?surface            :: SurfaceKHR
-type HasCommandPool        = ?commandPool        :: CommandPool
+type HasGLFW                = ?glfw                :: GLFWToken
+type HasWindow              = ?window              :: GLFW.Window
+type HasFramebufferResized  = ?framebufferResized  :: IORef Bool
+type HasInstance            = ?instance            :: Instance
+type HasValidationLayers    = ?validationLayers    :: Vector ByteString
+type HasDevice              = ?device              :: Device
+type HasSurface             = ?surface             :: SurfaceKHR
+type HasCommandPool         = ?commandPool         :: CommandPool
+type HasDescriptorSetLayout = ?descriptorSetLayout :: DescriptorSetLayout
 type HasGraphicsResources = ( HasGLFW
                             , HasWindow
                             , HasFramebufferResized
@@ -164,6 +170,7 @@ type HasGraphicsResources = ( HasGLFW
                             , HasCommandPool
                             , HasQueues
                             , HasPhysicalDeviceRelated
+                            , HasDescriptorSetLayout
                             )
 
 type SyncVector = Sized.Vector MaxFramesInFlight
@@ -184,22 +191,35 @@ type HasShaderPaths = ( HasVertexShaderPath
                       , HasFragmentShaderPath
                       )
 
+data VertexData = forall a n . (KnownNat n, Storable a) => MkVertexData (Sized.Vector n a)
+data UboData = forall a . Storable a => MkUboData { uboUpdate :: a -> a
+                                                  , uboRef    :: IORef a
+                                                  }
+
 type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
+type HasDescriptorSetLayoutInfo = ?descriptorSetLayoutInfo :: DescriptorSetLayoutCreateInfo '[]
 type HasVertexInputInfo = ?vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
 type HasVertexBufferInfo = ?vertexBufferInfo :: BufferCreateInfo '[]
-type HasVertexData = ?vertexData :: SVector Float
-type HasDescriptorSetLayout = ?descriptorSetLayout :: Vector DescriptorSetLayoutBinding
+type HasVertexData = ?vertexData :: VertexData
+type HasUniformBufferSize = ?uniformBufferSize :: DeviceSize
+type HasUboData = ?uboData :: UboData
+type HasDesiredSwapchainImageNum = ?desiredSwapchainImageNum :: Natural
 type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
+                       , HasDescriptorSetLayoutInfo
                        , HasVertexInputInfo
                        , HasVertexBufferInfo
                        , HasVertexData
-                       , HasDescriptorSetLayout
+                       , HasUniformBufferSize
+                       , HasUboData
+                       , HasDesiredSwapchainImageNum
                        )
 
-type HasVertexBuffer = ?vertexBuffer :: Buffer
-type HasVulkanResources = ( HasGraphicsResources
+type HasVertexBuffer   = ?vertexBuffer   :: Buffer
+type HasUniformBuffers = ?uniformBuffers :: SVector (Buffer, DeviceMemory)
+type HasVulkanResources = ( HasVertexBuffer
+                          , HasUniformBuffers
+                          , HasGraphicsResources
                           , HasMutables
-                          , HasVertexBuffer
                           , HasShaderPaths
                           , HasVulkanConfig
                           , HasSyncs
