@@ -42,7 +42,9 @@ vertex = shader do
 
   phi <- let' $ time / 100
   position <- #position
-  scl <- let' $ Mat22 (fromIntegral windowHeight / fromIntegral windowWidth) 0 0 1
+  scl <- let' if windowHeight < windowWidth
+              then Mat22 (fromIntegral windowHeight / fromIntegral windowWidth) 0 0 1
+              else Mat22 1 0 0 (fromIntegral windowWidth / fromIntegral windowHeight)
   rot <- let' $ Mat22 (cos phi) (sin phi) (-(sin phi)) (cos phi)
   pos' <- let' $ (scl !*! rot) !*^ position
   #gl_Position .= Vec4 (view @(Swizzle "x") pos') (view @(Swizzle "y") pos') 0 1
