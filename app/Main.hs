@@ -126,8 +126,6 @@ drawFrame currentFrame = do
   pure if | elem @[] SUBOPTIMAL_KHR [imageResult, queueResult] -> PleaseRecreate
           | otherwise -> Don'tRecreate
 
--- FIXME: the combination of the -lvf flags and calling updateUniformBuffer results in
--- segfault after a few seconds of window events
 updateUniformBuffer :: (MonadUnliftIO m, HasDevice, HasUboData, HasUniformBuffers, HasUniformBufferSize)
                     => Word32 -> Int32 -> Int32 -> m ()
 updateUniformBuffer currentImageIndex windowWidth windowHeight = do
