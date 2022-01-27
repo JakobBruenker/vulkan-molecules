@@ -1,4 +1,4 @@
-module Graphics.Utils where
+module VulkanSetup.Utils where
 
 import RIO
 import Data.Tuple (swap)

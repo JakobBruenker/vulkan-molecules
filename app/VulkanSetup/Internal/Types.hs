@@ -2,7 +2,7 @@
 
 {-# LANGUAGE MagicHash #-}
 
-module Graphics.Internal.Types where
+module VulkanSetup.Internal.Types where
 
 import RIO
 import RIO.ByteString qualified as B
@@ -104,14 +104,18 @@ data ImageRelated = MkImageRelated { image         :: Image
                                    , descriptorSet :: DescriptorSet
                                    }
 
-data Mutables = MkMutables { imageRelateds          :: Vector ImageRelated
-                           , swapchainFormat        :: Format
-                           , swapchainExtent        :: Extent2D
-                           , swapchain              :: SwapchainKHR
-                           , renderPass             :: RenderPass
-                           , graphicsPipelineLayout :: PipelineLayout
-                           , graphicsPipeline       :: Pipeline
-                           }
+data GraphicsMutables = MkGraphicsMutables { imageRelateds          :: Vector ImageRelated
+                                           , swapchainFormat        :: Format
+                                           , swapchainExtent        :: Extent2D
+                                           , swapchain              :: SwapchainKHR
+                                           , renderPass             :: RenderPass
+                                           , graphicsPipelineLayout :: PipelineLayout
+                                           , graphicsPipeline       :: Pipeline
+                                           }
+
+data ComputeMutables = MkComputeMutables { computePipelineLayout :: PipelineLayout
+                                         , computePipeline       :: Pipeline
+                                         }
 
 type HasLogger = ?logFunc :: LogFunc
 
@@ -186,7 +190,8 @@ type HasSyncs = ( HasImageAvailable
                 , HasInFlight
                 )
 
-type HasMutables = ?mutables :: MResources Mutables
+type HasGraphicsMutables = ?graphicsMutables :: MResources GraphicsMutables
+type HasComputeMutables  = ?computeMutables  :: MResources ComputeMutables
 
 type HasVertexShaderPath   = ?vertexShaderPath   :: FilePath
 type HasFragmentShaderPath = ?fragmentShaderPath :: FilePath
@@ -203,6 +208,7 @@ data UboData = forall a . Storable a => MkUboData { uboProxy  :: Proxy# a
                                                   }
 
 type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
+type HasComputePipelineLayoutInfo  = ?computePipelineLayoutInfo  :: PipelineLayoutCreateInfo
 type HasDescriptorSetLayoutInfo = ?descriptorSetLayoutInfo :: DescriptorSetLayoutCreateInfo '[]
 type HasVertexInputInfo = ?vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
 type HasVertexBufferInfo = ?vertexBufferInfo :: BufferCreateInfo '[]
@@ -211,6 +217,7 @@ type HasUniformBufferSize = ?uniformBufferSize :: DeviceSize
 type HasUboData = ?uboData :: UboData
 type HasDesiredSwapchainImageNum = ?desiredSwapchainImageNum :: Natural
 type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
+                       , HasComputePipelineLayoutInfo
                        , HasDescriptorSetLayoutInfo
                        , HasVertexInputInfo
                        , HasVertexBufferInfo
@@ -220,12 +227,13 @@ type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
                        , HasDesiredSwapchainImageNum
                        )
 
-type HasVertexBuffer   = ?vertexBuffer   :: Buffer
-type HasUniformBuffers = ?uniformBuffers :: SVector (Buffer, DeviceMemory)
+type HasVertexBuffer          = ?vertexBuffer          :: Buffer
+type HasUniformBuffers        = ?uniformBuffers        :: SVector (Buffer, DeviceMemory)
 type HasVulkanResources = ( HasVertexBuffer
                           , HasUniformBuffers
                           , HasGraphicsResources
-                          , HasMutables
+                          , HasGraphicsMutables
+                          -- , HasComputeMutables
                           , HasShaderPaths
                           , HasVulkanConfig
                           , HasSyncs

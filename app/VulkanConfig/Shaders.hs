@@ -12,7 +12,26 @@ import Math.Linear
 import Data.Foldable (sequence_)
 import RIO.FilePath ((</>))
 
-import Graphics.Types
+import VulkanSetup.Types
+
+type UpdatePosLocalSize = 256
+
+
+type UpdatePosDefs =
+  '[ "positions" ':-> StorageBuffer [DescriptorSet 1, Binding 0      ]
+                      (Struct '["posArray" ':-> RuntimeArray (Struct '[ "pos" ':-> V 2 Float
+                                                                      , "col" ':-> V 3 Float
+                                                                      ])])
+   , "ubo"       ':-> Uniform      '[DescriptorSet 0, Binding 0      ] UniformInput
+   , "main"      ':-> EntryPoint   '[LocalSize UpdatePosLocalSize 1 1] Compute
+   ]
+
+updatePos :: Module UpdatePosDefs
+updatePos = Module $ entryPoint @"main" @Compute do
+  gid <- use @(Name "gl_GlobalInvocationID" :.: Swizzle "x")
+  positions <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) gid
+  assign @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) gid $
+    over @(Name "col" :.: Swizzle "g") (+ 0.01) positions
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -29,16 +48,15 @@ type VertexDefs =
   '[ "position"  ':-> Input      '[Location 0                ] (V 2 Float)
    , "color"     ':-> Input      '[Location 1                ] (V 3 Float)
    , "vertColor" ':-> Output     '[Location 0                ] (V 4 Float)
-   , "ubo"       ':-> Uniform    '[Binding 0, DescriptorSet 0] UniformInput
+   , "ubo"       ':-> Uniform    '[DescriptorSet 0, Binding 0] UniformInput
    , "main"      ':-> EntryPoint '[                          ] Vertex
    ]
 
 vertex :: ShaderModule "main" VertexShader VertexDefs _
 vertex = shader do
-  ubo <- #ubo
-  time <- let' $ view @(Name "time") ubo
-  windowWidth <- let' $ view @(Name "windowWidth") ubo
-  windowHeight <- let' $ view @(Name "windowHeight") ubo
+  time <- use @(Name "ubo" :.: Name "time")
+  windowWidth <- use @(Name "ubo" :.: Name "windowWidth")
+  windowHeight <- use @(Name "ubo" :.: Name "windowHeight")
 
   phi <- let' $ time / 100
   position <- #position
@@ -74,19 +92,22 @@ shaderPipeline = ShaderPipeline $ StructInput @VertexInput @Points
   :>-> (vertex  , vertexShaderPath  )
   :>-> (fragment, fragmentShaderPath)
 
-shadersPath, vertexShaderPath, fragmentShaderPath :: FilePath
+shadersPath, vertexShaderPath, fragmentShaderPath, updatePosPath :: FilePath
 shadersPath = "shaders"
 vertexShaderPath   = shadersPath </> "vert.spv"
 fragmentShaderPath = shadersPath </> "frag.spv"
+updatePosPath      = shadersPath </> "updPos.spv"
 
 shaderPaths :: Dict HasShaderPaths
 shaderPaths = Dict
   where ?vertexShaderPath = vertexShaderPath
         ?fragmentShaderPath = fragmentShaderPath
+        ?updatePosPath = updatePosPath
 
 compileAllShaders :: IO ()
 compileAllShaders = sequence_
   [ compileTo vertexShaderPath spirv vertex
   , compileTo fragmentShaderPath spirv fragment
+  , compileTo updatePosPath spirv updatePos
   ]
   where spirv = [SPIRV $ Version 1 0]

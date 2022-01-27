@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedLists #-}
 
-module Graphics.Mutables where
+module VulkanSetup.GraphicsMutables where
 
 import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.Vector qualified as V
@@ -26,34 +26,34 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 
-import Graphics.Types
 import Utils
-import Graphics.Utils
+import VulkanSetup.Types
+import VulkanSetup.Utils
 
-initMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig, HasUniformBuffers)
-             => ResIO (Dict HasMutables)
-initMutables = do
-  mutables <- mkMResources =<< constructMutables
-  let ?mutables = mutables
+initGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
+                         HasUniformBuffers)
+                     => ResIO (Dict HasGraphicsMutables)
+initGraphicsMutables = do
+  graphicsMutables <- mkMResources =<< constructGraphicsMutables
+  let ?graphicsMutables = graphicsMutables
   pure Dict
 
-constructMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
-                      HasUniformBuffers)
-                  => ResIO ([ReleaseKey], Mutables)
-constructMutables = do
+constructGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
+                              HasUniformBuffers)
+                          => ResIO ([ReleaseKey], GraphicsMutables)
+constructGraphicsMutables = do
   scInfo@(SwapchainCreateInfoKHR{ imageExtent = swapchainExtent
                                 , imageFormat = swapchainFormat
                                 })        <- swapchainCreateInfo
   (swapchainKey , swapchain             ) <- constructSwapchain scInfo
   (renderPassKey, renderPass            ) <- constructGraphicsRenderPass swapchainFormat
-  (layoutKey    , graphicsPipelineLayout) <-
-    constructGraphicsPipelineLayout ?graphicsPipelineLayoutInfo
+  (layoutKey    , graphicsPipelineLayout) <- constructGraphicsPipelineLayout
   (pipelineKey  , graphicsPipeline      ) <-
     constructGraphicsPipeline renderPass swapchainExtent graphicsPipelineLayout
   (imageKeys    , imageRelateds         ) <-
     constructImageRelateds swapchainExtent swapchainFormat renderPass swapchain
 
-  pure ([swapchainKey, renderPassKey, layoutKey, pipelineKey] <> imageKeys, MkMutables{..})
+  pure ([swapchainKey, renderPassKey, layoutKey, pipelineKey] <> imageKeys, MkGraphicsMutables{..})
 
 constructSwapchain :: (HasLogger, HasDevice)
                    => SwapchainCreateInfoKHR '[] -> ResIO (ReleaseKey, SwapchainKHR)
@@ -128,10 +128,11 @@ withShader path action = do
   bytes <- readFileBinary path
   withShaderModule ?device zero{code = bytes} Nothing bracket action
 
-constructGraphicsPipelineLayout :: (HasDevice, HasDescriptorSetLayout)
-                                => PipelineLayoutCreateInfo -> ResIO (ReleaseKey, PipelineLayout)
-constructGraphicsPipelineLayout layoutInfo = do
-  withPipelineLayout ?device layoutInfo{setLayouts = [?descriptorSetLayout]} Nothing allocate
+constructGraphicsPipelineLayout :: (HasDevice, HasDescriptorSetLayout, HasGraphicsPipelineLayoutInfo)
+                                => ResIO (ReleaseKey, PipelineLayout)
+constructGraphicsPipelineLayout =
+  withPipelineLayout
+    ?device ?graphicsPipelineLayoutInfo{setLayouts = [?descriptorSetLayout]} Nothing allocate
 
 constructGraphicsPipeline :: (HasLogger, HasDevice, HasShaderPaths, HasVulkanConfig)
                           => RenderPass -> Extent2D -> PipelineLayout -> ResIO (ReleaseKey, Pipeline)
@@ -353,6 +354,6 @@ recreateSwapchain setupCommands = do
 
   deviceWaitIdle ?device
 
-  writeRes ?mutables constructMutables
+  writeRes ?graphicsMutables constructGraphicsMutables
 
   setupCommands

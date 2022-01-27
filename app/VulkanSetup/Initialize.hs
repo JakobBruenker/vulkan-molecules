@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedLists #-}
 
-module Graphics.Initialize where
+module VulkanSetup.Initialize where
 
 import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.ByteString qualified as B
@@ -36,12 +36,12 @@ import Vulkan.Zero
 import Vulkan.CStruct.Extends
 import Vulkan.Exception
 
-import Graphics.Internal.Types(GLFWToken(UnsafeMkGLFWToken))
 
-import Graphics.Mutables
 import Utils
-import Graphics.Utils
-import Graphics.Types
+import VulkanSetup.Internal.Types(GLFWToken(UnsafeMkGLFWToken))
+import VulkanSetup.GraphicsMutables
+import VulkanSetup.Utils
+import VulkanSetup.Types
 import qualified Data.Vector.Storable.Sized as Sized
 
 initGLFW :: HasLogger => ResIO (Dict HasGLFW)
@@ -368,7 +368,7 @@ initializeVulkan setupGraphicsCommands = do
   Dict <- initVertexBuffer
   Dict <- initUniformBuffers
   Dict <- initDescriptorSetLayout
-  Dict <- initMutables
+  Dict <- initGraphicsMutables
   Dict <- initSyncs
 
   setupGraphicsCommands $> Dict

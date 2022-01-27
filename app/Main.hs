@@ -28,9 +28,9 @@ import Vulkan.Zero
 
 import VulkanConfig.Shaders
 import VulkanConfig.Pipeline as PL
-import Graphics.Initialize
-import Graphics.Mutables
-import Graphics.Types
+import VulkanSetup.Initialize
+import VulkanSetup.GraphicsMutables
+import VulkanSetup.Types
 import Options
 import Utils
 
@@ -79,7 +79,7 @@ mainLoop = do
 
 drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecreateSwapchain
 drawFrame currentFrame = do
-  MkMutables{swapchain, imageRelateds} <- readRes ?mutables
+  MkGraphicsMutables{swapchain, imageRelateds} <- readRes ?graphicsMutables
 
   let ixSync :: Storable a => Sized.Vector MaxFramesInFlight a -> a
       ixSync = view $ Sized.ix currentFrame

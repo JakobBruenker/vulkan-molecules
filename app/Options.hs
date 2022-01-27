@@ -4,7 +4,7 @@ import RIO
 
 import Options.Applicative
 
-import Graphics.Types
+import VulkanSetup.Types
 
 data Options = MkOptions { optWidth            :: Natural
                          , optHeight           :: Natural

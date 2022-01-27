@@ -25,11 +25,12 @@ executable boxticle
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    other-modules:    Graphics.Mutables
-                      Graphics.Initialize
-                      Graphics.Types
-                      Graphics.Internal.Types
-                      Graphics.Utils
+    other-modules:    VulkanSetup.GraphicsMutables
+                      VulkanSetup.ComputeMutables
+                      VulkanSetup.Initialize
+                      VulkanSetup.Types
+                      VulkanSetup.Internal.Types
+                      VulkanSetup.Utils
                       VulkanConfig.Shaders
                       VulkanConfig.Pipeline
                       Utils

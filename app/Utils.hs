@@ -9,7 +9,7 @@ import GHC.TypeNats (KnownNat, natVal')
 import GHC.Exts (proxy#, Proxy#)
 import Foreign.Storable (sizeOf)
 
-import Graphics.Types
+import VulkanSetup.Types
 
 logDebug :: HasCallStack => (HasLogger, MonadIO m) => Utf8Builder -> m ()
 logDebug = flip runReaderT ?logFunc . RIO.logDebug

@@ -19,7 +19,7 @@ import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
 import Vulkan.Zero
 import Vulkan.CStruct.Extends
 
-import Graphics.Types
+import VulkanSetup.Types
 import Utils
 
 type SizeFloat = 4
@@ -58,8 +58,8 @@ uboData = MkUboData proxy# (\(w, h) (i, _, _) -> (i + 1, w, h)) <$>
 
 setupGraphicsCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupGraphicsCommands = do
-  MkMutables{imageRelateds, renderPass, swapchainExtent, graphicsPipelineLayout, graphicsPipeline} <-
-    readRes ?mutables
+  MkGraphicsMutables{imageRelateds, renderPass, swapchainExtent, graphicsPipelineLayout, graphicsPipeline} <-
+    readRes ?graphicsMutables
   for_ imageRelateds \MkImageRelated{framebuffer, commandBuffer, descriptorSet} -> do
     useCommandBuffer commandBuffer zero do
       let renderPassInfo = zero{ renderPass
@@ -79,6 +79,9 @@ setupGraphicsCommands = do
 
 graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
 graphicsPipelineLayoutInfo = zero
+
+computePipelineLayoutInfo :: PipelineLayoutCreateInfo
+computePipelineLayoutInfo = zero
 
 vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
 vertexInputInfo = SomeStruct zero{vertexBindingDescriptions, vertexAttributeDescriptions}
@@ -120,6 +123,7 @@ vulkanConfig :: MonadIO m => m (Dict HasVulkanConfig)
 vulkanConfig = do
   uboData'@(MkUboData uboProxy _ _) <- uboData
   let ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
+      ?computePipelineLayoutInfo = computePipelineLayoutInfo
       ?vertexInputInfo = vertexInputInfo
       ?vertexBufferInfo = vertexBufferInfo
       ?vertexData = MkVertexData VulkanConfig.Pipeline.vertexData
