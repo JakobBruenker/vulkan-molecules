@@ -25,7 +25,7 @@ import Utils
 type SizeFloat = 4
 
 type NumVertexEntries = 5
-type NumVertices = 7
+type NumVertices = 19
 type Size0 = 2
 type Size1 = 3
 
@@ -39,13 +39,32 @@ offset1 = floatSize * (integralNatVal @NumVertexEntries - integralNatVal @Size1)
 -- 2D position, RGB color
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Sized.Vector Size1 Float)
 vertexData = Sized.fromTuple
-  ( vertex ( 0  ,  0  ) ( 0  ,  0  ,  1  )
-  , vertex ( 0.1,  0.2) ( 0.3,  0.4,  0.5)
-  , vertex ( 0.2,  0.3) ( 0.4,  0.5,  0.6)
-  , vertex ( 0.3,  0.4) ( 0.5,  0.6,  0.7)
-  , vertex ( 0.4,  0.5) ( 0.6,  0.7,  0.8)
-  , vertex ( 0.5,  0.6) ( 0.7,  0.8,  0.9)
-  , vertex (-0.2,  0.6) ( 1  ,  0.1,  0  )
+  -- ( vertex ( 0  ,  0  ) ( 0  ,  0  ,  1  )
+  -- , vertex ( 0.1,  0.2) ( 0.3,  0.4,  0.5)
+  -- , vertex ( 0.2,  0.3) ( 0.4,  0.5,  0.6)
+  -- , vertex ( 0.3,  0.4) ( 0.5,  0.6,  0.7)
+  -- , vertex ( 0.4,  0.5) ( 0.6,  0.7,  0.8)
+  -- , vertex ( 0.5,  0.6) ( 0.7,  0.8,  0.9)
+  -- , vertex (-0.2,  0.6) ( 1  ,  0.1,  0  )
+  ( vertex ( 0  , -0.9) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  , -0.8) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  , -0.7) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  , -0.6) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  , -0.5) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  , -0.4) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  , -0.3) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  , -0.2) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  , -0.1) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0  ) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0.1) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0.2) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0.3) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0.4) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0.5) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0.6) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0.7) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0.8) ( 0.1,  0.1,  0.1)
+  , vertex ( 0  ,  0.9) ( 0.1,  0.1,  0.1)
   )
   where vertex (a, b) (c, d, e) = (Sized.fromTuple (a, b), Sized.fromTuple (c, d, e))
 

@@ -27,9 +27,10 @@ type UpdatePosDefs =
   -- EDIT: this is probably wrong, delete it if so, nothing to worry about I think
   '[ "ubo"       ':-> Uniform      '[DescriptorSet 0, Binding 0      ] UniformInput
    , "positions" ':-> StorageBuffer [DescriptorSet 1, Binding 0      ]
-                      (Struct '["posArray" ':-> RuntimeArray (Struct '[ "pos" ':-> V 2 Float
-                                                                      , "col" ':-> V 3 Float
-                                                                      ])])
+                      (Struct '["posArray" ':-> RuntimeArray Float])
+                      -- really, this should be a RuntimeArray with
+                      -- Struct ["pos" ':-> V 2 Float, "col" ':-> V 3 Float]
+                      -- But the alignment doesn't work out
    , "main"      ':-> EntryPoint   '[LocalSize UpdatePosLocalSize 1 1] Compute
    ]
 
@@ -37,9 +38,10 @@ updatePos :: Module UpdatePosDefs
 updatePos = Module $ entryPoint @"main" @Compute do
   gid <- #gl_GlobalInvocationID <<&>> \i -> i.x
   when (gid < Lit numVertices) do
-    positions <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) gid
-    assign @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) gid $
-      over @(Name "col" :.: Index 1) (+ 0.001) positions
+    index <- let' $ gid * 5 + 3
+    positions <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) index
+    assign @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) index $
+      positions + 0.001
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -74,7 +76,7 @@ vertex = shader do
   rot <- let' $ Mat22 (cos phi) (sin phi) (-(sin phi)) (cos phi)
   #gl_Position .= (scl !*! rot) !*^ position <!> Vec2 0 1
   color <- #color
-  #vertColor .= Vec4 color.r color.g color.b 0.3
+  #vertColor .= Vec4 color.r color.g color.b 0.7
   #gl_PointSize .= 40
 
 type FragmentDefs =
