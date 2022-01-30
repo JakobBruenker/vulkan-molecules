@@ -49,33 +49,49 @@ vertexData = Sized.fromTuple
   )
   where vertex (a, b) (c, d, e) = (Sized.fromTuple (a, b), Sized.fromTuple (c, d, e))
 
-type UboContents = ("time" ::: Float, "window width" ::: Int32, "window height" ::: Int32)
-type instance UboInput = ("window width" ::: Int32, "window height" ::: Int32)
+type GraphicsUboContents = ("time" ::: Float, "window width" ::: Int32, "window height" ::: Int32)
+type instance UboInput Graphics = ("window width" ::: Int32, "window height" ::: Int32)
 
-uboData :: MonadIO m => m UboData
-uboData = MkUboData proxy# (\(w, h) (i, _, _) -> (i + 1, w, h)) <$>
-  newIORef @_ @UboContents (0, 0, 0)
+graphicsUboData :: MonadIO m => m (UboData Graphics)
+graphicsUboData = MkUboData proxy# (\(w, h) (i, _, _) -> (i + 1, w, h)) <$>
+  newIORef @_ @GraphicsUboContents (0, 0, 0)
+
+type ComputeUboContents = ("tbd" ::: Float)
+type instance UboInput Compute = ("tbd" ::: Float)
+
+computeUboData :: MonadIO m => m (UboData Compute)
+computeUboData = MkUboData proxy# const <$> newIORef @_ @ComputeUboContents 1
+
+setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
+setupComputeCommands = do
+  mutables <- readRes ?computeMutables
+  useCommandBuffer mutables.commandBuffer zero{flags = COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT} do
+    cmdBindPipeline mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE mutables.pipeline
+    cmdBindDescriptorSets mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE
+                          mutables.pipelineLayout 0 mutables.descriptorSets []
+    cmdDispatch mutables.commandBuffer 1 1 1
+
+  logDebug "Set up compute commands"
 
 setupGraphicsCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupGraphicsCommands = do
-  MkGraphicsMutables{imageRelateds, renderPass, swapchainExtent, graphicsPipelineLayout, graphicsPipeline} <-
-    readRes ?graphicsMutables
-  for_ imageRelateds \MkImageRelated{framebuffer, commandBuffer, descriptorSet} -> do
-    useCommandBuffer commandBuffer zero do
-      let renderPassInfo = zero{ renderPass
-                               , framebuffer
-                               , renderArea = zero{extent = swapchainExtent}
+  mutables <- readRes ?graphicsMutables
+  for_ mutables.imageRelateds \ir -> do
+    useCommandBuffer ir.commandBuffer zero do
+      let renderPassInfo = zero{ renderPass = mutables.renderPass
+                               , framebuffer = ir.framebuffer
+                               , renderArea = zero{extent = mutables.swapchainExtent}
                                , clearValues = [Color $ Float32 0 0 0 1]
                                }
-      cmdUseRenderPass commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
-        cmdBindPipeline commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipeline
+      cmdUseRenderPass ir.commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
+        cmdBindPipeline ir.commandBuffer PIPELINE_BIND_POINT_GRAPHICS mutables.pipeline
 
-        cmdBindVertexBuffers commandBuffer 0 [?vertexBuffer] [0]
+        cmdBindVertexBuffers ir.commandBuffer 0 [?vertexBuffer] [0]
 
-        cmdBindDescriptorSets commandBuffer PIPELINE_BIND_POINT_GRAPHICS graphicsPipelineLayout
-                              0 [descriptorSet] []
-        cmdDraw commandBuffer numVertices 1 0 0
-  logDebug "Set up commands."
+        cmdBindDescriptorSets ir.commandBuffer PIPELINE_BIND_POINT_GRAPHICS
+                              mutables.pipelineLayout 0 [ir.descriptorSet] []
+        cmdDraw ir.commandBuffer numVertices 1 0 0
+  logDebug "Set up graphics commands."
 
 graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
 graphicsPipelineLayoutInfo = zero
@@ -105,30 +121,54 @@ vertexInputInfo = SomeStruct zero{vertexBindingDescriptions, vertexAttributeDesc
 
 vertexBufferInfo :: BufferCreateInfo '[]
 vertexBufferInfo = zero { size = ((*) `on` fromIntegral) numVertices vertexSize
-                        , usage = BUFFER_USAGE_VERTEX_BUFFER_BIT .|. BUFFER_USAGE_TRANSFER_DST_BIT
+                        , usage = BUFFER_USAGE_VERTEX_BUFFER_BIT
+                              .|. BUFFER_USAGE_TRANSFER_DST_BIT
+                              .|. BUFFER_USAGE_STORAGE_BUFFER_BIT
                         , sharingMode = SHARING_MODE_EXCLUSIVE
                         }
 
-descriptorSetLayoutInfo :: DescriptorSetLayoutCreateInfo '[]
-descriptorSetLayoutInfo = zero{bindings = descriptorSetBindings}
+graphicsDescriptorSetLayoutInfo :: DescriptorSetLayoutCreateInfo '[]
+graphicsDescriptorSetLayoutInfo = zero{bindings = graphicsDescriptorSetBindings}
   where
-    descriptorSetBindings = [ zero{ binding = 0
-                                  , descriptorType = DESCRIPTOR_TYPE_UNIFORM_BUFFER
-                                  , descriptorCount = 1
-                                  , stageFlags = SHADER_STAGE_VERTEX_BIT
-                                  }
-                            ]
+    graphicsDescriptorSetBindings = [ zero{ binding = 0
+                                          , descriptorType = DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                          , descriptorCount = 1
+                                          , stageFlags = SHADER_STAGE_VERTEX_BIT
+                                          }
+                                    ]
+
+computeDescriptorSetLayoutInfo :: Vector (DescriptorSetLayoutCreateInfo '[])
+computeDescriptorSetLayoutInfo = [ zero{bindings = uniformBindings}
+                                 , zero{bindings = storageBindings}
+                                 ]
+  where
+    uniformBindings = [ zero{ binding = 0
+                            , descriptorType = DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                            , descriptorCount = 1
+                            , stageFlags = SHADER_STAGE_COMPUTE_BIT
+                            }
+                      ]
+    storageBindings = [ zero{ binding = 0
+                            , descriptorType = DESCRIPTOR_TYPE_STORAGE_BUFFER
+                            , descriptorCount = 1
+                            , stageFlags = SHADER_STAGE_COMPUTE_BIT
+                            }
+                      ]
 
 vulkanConfig :: MonadIO m => m (Dict HasVulkanConfig)
 vulkanConfig = do
-  uboData'@(MkUboData uboProxy _ _) <- uboData
+  graphicsUboData'@(MkUboData graphicsUboProxy _ _) <- graphicsUboData
+  computeUboData'@(MkUboData computeUboProxy _ _) <- computeUboData
   let ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
       ?computePipelineLayoutInfo = computePipelineLayoutInfo
       ?vertexInputInfo = vertexInputInfo
       ?vertexBufferInfo = vertexBufferInfo
       ?vertexData = MkVertexData VulkanConfig.Pipeline.vertexData
-      ?descriptorSetLayoutInfo = descriptorSetLayoutInfo
-      ?uniformBufferSize = fromIntegral $ sizeOfProxied uboProxy
+      ?graphicsDescriptorSetLayoutInfo = graphicsDescriptorSetLayoutInfo
+      ?computeDescriptorSetLayoutInfo = computeDescriptorSetLayoutInfo
+      ?graphicsUniformBufferSize = fromIntegral $ sizeOfProxied graphicsUboProxy
+      ?graphicsUboData = graphicsUboData'
+      ?computeUniformBufferSize = fromIntegral $ sizeOfProxied computeUboProxy
+      ?computeUboData = computeUboData'
       ?desiredSwapchainImageNum = 3
-      ?uboData = uboData'
   pure Dict

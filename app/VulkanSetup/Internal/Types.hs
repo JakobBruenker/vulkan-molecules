@@ -21,6 +21,8 @@ import Vulkan.CStruct.Extends
 import GHC.TypeNats (KnownNat)
 import GHC.Exts (Proxy#)
 
+import Data.Kind (Type)
+
 type MaxFramesInFlight = 2
 
 data Dict c = c => Dict
@@ -69,10 +71,6 @@ instance Display AppException where
 -- abstract type to keep track of whether GLFW is initialized
 data GLFWToken = UnsafeMkGLFWToken
 
-data ShouldRecreateSwapchain = Don'tRecreate
-                             | PleaseRecreate
-                             deriving Eq
-
 -- a collection of resources that must be allocated and released
 data Resources a = MkResource { releaseKeys :: [ReleaseKey]
                               , resources   :: a
@@ -104,17 +102,19 @@ data ImageRelated = MkImageRelated { image         :: Image
                                    , descriptorSet :: DescriptorSet
                                    }
 
-data GraphicsMutables = MkGraphicsMutables { imageRelateds          :: Vector ImageRelated
-                                           , swapchainFormat        :: Format
-                                           , swapchainExtent        :: Extent2D
-                                           , swapchain              :: SwapchainKHR
-                                           , renderPass             :: RenderPass
-                                           , graphicsPipelineLayout :: PipelineLayout
-                                           , graphicsPipeline       :: Pipeline
+data GraphicsMutables = MkGraphicsMutables { imageRelateds   :: Vector ImageRelated
+                                           , swapchainFormat :: Format
+                                           , swapchainExtent :: Extent2D
+                                           , swapchain       :: SwapchainKHR
+                                           , renderPass      :: RenderPass
+                                           , pipelineLayout  :: PipelineLayout
+                                           , pipeline        :: Pipeline
                                            }
 
-data ComputeMutables = MkComputeMutables { computePipelineLayout :: PipelineLayout
-                                         , computePipeline       :: Pipeline
+data ComputeMutables = MkComputeMutables { pipelineLayout :: PipelineLayout
+                                         , pipeline       :: Pipeline
+                                         , descriptorSets :: Vector DescriptorSet
+                                         , commandBuffer  :: CommandBuffer
                                          }
 
 type HasLogger = ?logFunc :: LogFunc
@@ -135,15 +135,19 @@ type HasConfig = ( HasFullscreen
                  )
 
 type HasGraphicsQueue = ?graphicsQueue :: Queue
-type HasPresentQueue  = ?presentQueue :: Queue
+type HasPresentQueue  = ?presentQueue  :: Queue
+type HasComputeQueue  = ?computeQueue  :: Queue
 type HasQueues = ( HasGraphicsQueue
                  , HasPresentQueue
+                 , HasComputeQueue
                  )
 
 type HasGraphicsQueueFamily = ?graphicsQueueFamily :: Word32
 type HasPresentQueueFamily  = ?presentQueueFamily  :: Word32
+type HasComputeQueueFamily  = ?computeQueueFamily  :: Word32
 type HasQueueFamilyIndices = ( HasGraphicsQueueFamily
                              , HasPresentQueueFamily
+                             , HasComputeQueueFamily
                              )
 
 type HasSwapchainFormats      = ?swapchainFormats      :: NonEmpty SurfaceFormatKHR
@@ -158,15 +162,15 @@ type HasPhysicalDeviceRelated = ( HasPhysicalDevice
                                 , HasSwapchainSupport
                                 )
 
-type HasGLFW                = ?glfw                :: GLFWToken
-type HasWindow              = ?window              :: GLFW.Window
-type HasFramebufferResized  = ?framebufferResized  :: IORef Bool
-type HasInstance            = ?instance            :: Instance
-type HasValidationLayers    = ?validationLayers    :: Vector ByteString
-type HasDevice              = ?device              :: Device
-type HasSurface             = ?surface             :: SurfaceKHR
-type HasCommandPool         = ?commandPool         :: CommandPool
-type HasDescriptorSetLayout = ?descriptorSetLayout :: DescriptorSetLayout
+type HasGLFW                        = ?glfw                        :: GLFWToken
+type HasWindow                      = ?window                      :: GLFW.Window
+type HasFramebufferResized          = ?framebufferResized          :: IORef Bool
+type HasInstance                    = ?instance                    :: Instance
+type HasValidationLayers            = ?validationLayers            :: Vector ByteString
+type HasDevice                      = ?device                      :: Device
+type HasSurface                     = ?surface                     :: SurfaceKHR
+type HasGraphicsCommandPool         = ?graphicsCommandPool         :: CommandPool
+type HasGraphicsDescriptorSetLayout = ?graphicsDescriptorSetLayout :: DescriptorSetLayout
 type HasGraphicsResources = ( HasGLFW
                             , HasWindow
                             , HasFramebufferResized
@@ -174,11 +178,19 @@ type HasGraphicsResources = ( HasGLFW
                             , HasValidationLayers
                             , HasDevice
                             , HasSurface
-                            , HasCommandPool
+                            , HasGraphicsCommandPool
                             , HasQueues
                             , HasPhysicalDeviceRelated
-                            , HasDescriptorSetLayout
+                            , HasGraphicsDescriptorSetLayout
                             )
+
+type HasComputeCommandPool          = ?computeCommandPool          :: CommandPool
+type HasComputeDescriptorSetLayouts = ?computeDescriptorSetLayouts :: Vector DescriptorSetLayout
+type HasComputeResources = ( HasComputeCommandPool
+                           , HasComputeDescriptorSetLayouts
+                           , HasInstance
+                           , HasDevice
+                           )
 
 type SyncVector = Sized.Vector MaxFramesInFlight
 
@@ -195,45 +207,60 @@ type HasComputeMutables  = ?computeMutables  :: MResources ComputeMutables
 
 type HasVertexShaderPath   = ?vertexShaderPath   :: FilePath
 type HasFragmentShaderPath = ?fragmentShaderPath :: FilePath
+type HasComputeShaderPath  = ?computeShaderPath  :: FilePath
 type HasShaderPaths = ( HasVertexShaderPath
                       , HasFragmentShaderPath
+                      , HasComputeShaderPath
                       )
 
-type family UboInput
+type UboInput :: UboUsage -> Type
+type family UboInput usage
+data UboUsage = Graphics | Compute
 
 data VertexData = forall a n . (KnownNat n, Storable a) => MkVertexData (Sized.Vector n a)
-data UboData = forall a . Storable a => MkUboData { uboProxy  :: Proxy# a
-                                                  , uboUpdate :: UboInput -> a -> a
-                                                  , uboRef    :: IORef a
-                                                  }
+data UboData usage = forall a . Storable a => MkUboData { proxy  :: Proxy# a
+                                                        , update :: UboInput usage -> a -> a
+                                                        , ref    :: IORef a
+                                                        }
 
 type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
 type HasComputePipelineLayoutInfo  = ?computePipelineLayoutInfo  :: PipelineLayoutCreateInfo
-type HasDescriptorSetLayoutInfo = ?descriptorSetLayoutInfo :: DescriptorSetLayoutCreateInfo '[]
+type HasGraphicsDescriptorSetLayoutInfo =
+  ?graphicsDescriptorSetLayoutInfo :: DescriptorSetLayoutCreateInfo '[]
+type HasComputeDescriptorSetLayoutInfo =
+  ?computeDescriptorSetLayoutInfo :: Vector (DescriptorSetLayoutCreateInfo '[])
 type HasVertexInputInfo = ?vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
 type HasVertexBufferInfo = ?vertexBufferInfo :: BufferCreateInfo '[]
 type HasVertexData = ?vertexData :: VertexData
-type HasUniformBufferSize = ?uniformBufferSize :: DeviceSize
-type HasUboData = ?uboData :: UboData
+type HasGraphicsUniformBufferSize = ?graphicsUniformBufferSize :: DeviceSize
+type HasComputeUniformBufferSize = ?computeUniformBufferSize :: DeviceSize
+type HasGraphicsUboData = ?graphicsUboData :: UboData Graphics
+type HasComputeUboData = ?computeUboData :: UboData Compute
 type HasDesiredSwapchainImageNum = ?desiredSwapchainImageNum :: Natural
 type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
                        , HasComputePipelineLayoutInfo
-                       , HasDescriptorSetLayoutInfo
+                       , HasGraphicsDescriptorSetLayoutInfo
+                       , HasComputeDescriptorSetLayoutInfo
                        , HasVertexInputInfo
                        , HasVertexBufferInfo
                        , HasVertexData
-                       , HasUniformBufferSize
-                       , HasUboData
+                       , HasGraphicsUniformBufferSize
+                       , HasComputeUniformBufferSize
+                       , HasGraphicsUboData
+                       , HasComputeUboData
                        , HasDesiredSwapchainImageNum
                        )
 
-type HasVertexBuffer          = ?vertexBuffer          :: Buffer
-type HasUniformBuffers        = ?uniformBuffers        :: SVector (Buffer, DeviceMemory)
+type HasVertexBuffer           = ?vertexBuffer           :: Buffer
+type HasGraphicsUniformBuffers = ?graphicsUniformBuffers :: SVector (Buffer, DeviceMemory)
+type HasComputeUniformBuffer   = ?computeUniformBuffer   :: (Buffer, DeviceMemory)
+type HasComputeStorageBuffer   = ?computeStorageBuffer   :: Buffer
 type HasVulkanResources = ( HasVertexBuffer
-                          , HasUniformBuffers
+                          , HasGraphicsUniformBuffers
+                          , HasComputeUniformBuffer
                           , HasGraphicsResources
                           , HasGraphicsMutables
-                          -- , HasComputeMutables
+                          , HasComputeMutables
                           , HasShaderPaths
                           , HasVulkanConfig
                           , HasSyncs

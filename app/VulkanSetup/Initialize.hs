@@ -23,7 +23,7 @@ import Foreign (malloc, nullPtr, Storable (peek, sizeOf), copyBytes, castPtr)
 import Foreign.Storable.Tuple ()
 import Data.List.NonEmpty.Extra (maximumOn1)
 import Control.Lens.Combinators (ifind)
-
+import qualified Data.Vector.Storable.Sized as Sized
 
 import Graphics.UI.GLFW qualified as GLFW
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -42,7 +42,7 @@ import VulkanSetup.Internal.Types(GLFWToken(UnsafeMkGLFWToken))
 import VulkanSetup.GraphicsMutables
 import VulkanSetup.Utils
 import VulkanSetup.Types
-import qualified Data.Vector.Storable.Sized as Sized
+import VulkanSetup.ComputeMutables
 
 initGLFW :: HasLogger => ResIO (Dict HasGLFW)
 initGLFW = do
@@ -64,7 +64,7 @@ initInstance = do
     do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
   logDebug $ "Required extensions for GLFW: " <> displayShow enabledExtensionNames
 
-  let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 0 0} :: ApplicationInfo)
+  let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 2 0} :: ApplicationInfo)
       instanceCreateInfo = zero{ applicationInfo
                                , enabledExtensionNames
                                , enabledLayerNames = ?validationLayers
@@ -172,17 +172,25 @@ initPhysicalDevice = do
                       => Natural -> MaybeT m (Dict HasQueueFamilyIndices)
     findQueueFamilies index = do
       props <- getPhysicalDeviceQueueFamilyProperties ?physicalDevice
-      Just graphics <- pure $ fromIntegral <$>
-        V.findIndex (\p -> queueFlags p .&. QUEUE_GRAPHICS_BIT > zero) props
-      logResult "graphics" graphics
+
+      let findByFlag flag name = do
+            Just queue <- pure $ fromIntegral <$>
+              V.findIndex (\p -> queueFlags p .&. flag > zero) props
+            logResult name queue
+            pure queue
+
+      graphics <- findByFlag QUEUE_GRAPHICS_BIT "graphics"
 
       let indices = ZipList (toList props) *> [0..]
           surfaceSupport = getPhysicalDeviceSurfaceSupportKHR ?physicalDevice ?? ?surface
       Just present <- fmap fst . find snd <$> (traverse . traverseToSnd) surfaceSupport indices
       logResult "present" present
 
+      compute <- findByFlag QUEUE_COMPUTE_BIT "compute"
+
       let ?graphicsQueueFamily = graphics
           ?presentQueueFamily  = present
+          ?computeQueueFamily  = compute
       pure Dict
       where
         logResult name queueIndex = logDebug $
@@ -194,7 +202,7 @@ initPhysicalDevice = do
       exts <- fmap extensionName . snd <$> enumerateDeviceExtensionProperties ?physicalDevice Nothing
       let yes = V.all (`elem` exts) deviceExtensions
       logDebug $ "Device " <> displayShow index <> " " <> bool "doesn't support" "supports" yes <>
-                 " extensions " <> displayShow deviceExtensions <> "."
+                 " all extensions in " <> displayShow deviceExtensions <> "."
       pure yes
 
     querySwapchainSupport :: (MonadIO m, HasPhysicalDevice)
@@ -211,8 +219,9 @@ initPhysicalDevice = do
 initDevice :: (HasLogger, HasPhysicalDeviceRelated, HasValidationLayers)
            => ResIO (Dict HasDevice)
 initDevice = do
-  let queueCreateInfos = V.fromList (nub [?graphicsQueueFamily, ?presentQueueFamily]) <&>
-        \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1]}
+  let queueCreateInfos =
+        V.fromList (nub [?graphicsQueueFamily, ?presentQueueFamily, ?computeQueueFamily]) <&>
+          \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1]}
       deviceCreateInfo = zero{ queueCreateInfos
                              , enabledLayerNames = ?validationLayers
                              , enabledExtensionNames = deviceExtensions
@@ -225,10 +234,13 @@ initDevice = do
 
 initQueues :: (HasLogger, HasDevice, HasQueueFamilyIndices) => ResIO (Dict HasQueues)
 initQueues = do
-  (graphicsQueue, presentQueue) <-
-    join bitraverse (getDeviceQueue ?device ?? 0) (?graphicsQueueFamily, ?presentQueueFamily)
+  let getQueue = getDeviceQueue ?device ?? 0
+  graphicsQueue <- getQueue ?graphicsQueueFamily
+  presentQueue  <- getQueue ?presentQueueFamily
+  computeQueue  <- getQueue ?computeQueueFamily
   let ?graphicsQueue = graphicsQueue
       ?presentQueue  = presentQueue
+      ?computeQueue  = computeQueue
 
   logDebug "Obtained device queues."
   pure Dict
@@ -236,16 +248,23 @@ initQueues = do
 deviceExtensions :: Vector ByteString
 deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
+  , KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME
   ]
 
-initCommandPool :: (HasLogger, HasDevice, HasGraphicsQueueFamily) => ResIO (Dict HasCommandPool)
-initCommandPool = do
-  let commandPoolInfo = zero{ queueFamilyIndex = ?graphicsQueueFamily
-                            } :: CommandPoolCreateInfo
-  (_, commandPool) <- withCommandPool ?device commandPoolInfo Nothing allocate
-  let ?commandPool = commandPool
+initCommandPools :: (HasLogger, HasDevice, HasGraphicsQueueFamily, HasComputeQueueFamily)
+                 => ResIO (Dict (HasGraphicsCommandPool, HasComputeCommandPool))
+initCommandPools = do
+  let graphicsCommandPoolInfo = zero{ queueFamilyIndex = ?graphicsQueueFamily
+                                    } :: CommandPoolCreateInfo
+  (_, graphicsPool) <- withCommandPool ?device graphicsCommandPoolInfo Nothing allocate
+  let ?graphicsCommandPool = graphicsPool
 
-  logDebug "Created command pool."
+  let computeCommandPoolInfo = zero{ queueFamilyIndex = ?computeQueueFamily
+                                   } :: CommandPoolCreateInfo
+  (_, computePool) <- withCommandPool ?device computeCommandPoolInfo Nothing allocate
+  let ?computeCommandPool = computePool
+
+  logDebug "Created command pools."
   pure Dict
 
 -- TODO: combine buffers and allocations into single buffers and use offsets to
@@ -256,30 +275,28 @@ constructBuffer :: (HasPhysicalDevice, HasDevice)
 constructBuffer info properties = do
   (bufferKey, buffer) <- withBuffer ?device info Nothing allocate
 
-  MemoryRequirements{ size = allocationSize
-                    , memoryTypeBits
-                    } <- getBufferMemoryRequirements ?device buffer
-  PhysicalDeviceMemoryProperties{memoryTypes} <- getPhysicalDeviceMemoryProperties ?physicalDevice
+  memReqs <- getBufferMemoryRequirements ?device buffer
+  memProps <- getPhysicalDeviceMemoryProperties ?physicalDevice
 
-  let memoryType = ifind ?? memoryTypes $ \i MemoryType{propertyFlags} ->
-        testBit memoryTypeBits i &&
+  let memoryType = ifind ?? memProps.memoryTypes $ \i MemoryType{propertyFlags} ->
+        testBit memReqs.memoryTypeBits i &&
         -- check whether all properties are set
         ((propertyFlags `xor` properties) .&. properties == zero)
 
   memoryTypeIndex <- maybe (throwIO VkNoSuitableMemoryType) (pure . fromIntegral . fst) memoryType
 
-  let allocInfo = zero{allocationSize , memoryTypeIndex}
+  let allocInfo = zero{allocationSize = memReqs.size, memoryTypeIndex}
   (memoryKey, memory) <- withMemory ?device allocInfo Nothing allocate
 
   bindBufferMemory ?device buffer memory 0
 
   pure ((bufferKey, buffer), (memoryKey, memory))
 
-copyBuffer :: (MonadUnliftIO m, HasDevice, HasCommandPool)
-           => Queue -> "src" ::: Buffer -> "dst" ::: Buffer -> DeviceSize -> m ()
-copyBuffer queue src dst size = do
+copyBuffer :: (MonadUnliftIO m, HasDevice)
+           => CommandPool -> Queue -> "src" ::: Buffer -> "dst" ::: Buffer -> DeviceSize -> m ()
+copyBuffer commandPool queue src dst size = do
   let allocInfo = zero{ level = COMMAND_BUFFER_LEVEL_PRIMARY
-                      , commandPool = ?commandPool
+                      , commandPool
                       , commandBufferCount = 1
                       }
   let beginInfo = zero{flags = COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT} :: CommandBufferBeginInfo '[]
@@ -293,7 +310,7 @@ copyBuffer queue src dst size = do
       pure ()
     bufs -> throwIO $ VkWrongNumberOfCommandBuffers 1 (fromIntegral $ length bufs)
 
-initVertexBuffer :: (HasLogger, HasPhysicalDevice, HasDevice, HasGraphicsQueue, HasCommandPool,
+initVertexBuffer :: (HasLogger, HasPhysicalDevice, HasDevice, HasGraphicsQueue, HasGraphicsCommandPool,
                      HasVertexBufferInfo, HasVertexData)
                  => ResIO (Dict HasVertexBuffer)
 initVertexBuffer = do
@@ -301,12 +318,11 @@ initVertexBuffer = do
                                         , sharingMode = SHARING_MODE_EXCLUSIVE
                                         } :: BufferCreateInfo '[]
       stagingBufProps = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
-      BufferCreateInfo{size = bufferSize} = ?vertexBufferInfo
 
   ((sBufKey, stagingBuffer), (sMemKey, stagingMemory)) <-
     constructBuffer stagingBufInfo stagingBufProps
 
-  liftIO $ withMappedMemory ?device stagingMemory 0 bufferSize zero bracket \target -> do
+  liftIO $ withMappedMemory ?device stagingMemory 0 ?vertexBufferInfo.size zero bracket \target -> do
     MkVertexData vertexData <- pure ?vertexData
     VS.unsafeWith (Sized.SomeSized vertexData) \(castPtr -> source) ->
       copyBytes target source $ Sized.length vertexData * sizeOf (VS.head $ Sized.SomeSized vertexData)
@@ -315,7 +331,7 @@ initVertexBuffer = do
   ((_, vertexBuffer), _) <- constructBuffer ?vertexBufferInfo vertBufProps
   let ?vertexBuffer = vertexBuffer
 
-  copyBuffer ?graphicsQueue stagingBuffer vertexBuffer bufferSize
+  copyBuffer ?graphicsCommandPool ?graphicsQueue stagingBuffer vertexBuffer ?vertexBufferInfo.size
 
   -- We don't need the staging buffer anymore
   traverse_ @[] release [sBufKey, sMemKey]
@@ -323,16 +339,15 @@ initVertexBuffer = do
   logDebug "Created vertex buffer."
   pure Dict
 
-initUniformBuffers :: (HasLogger, HasSurface, HasPhysicalDevice, HasDevice, HasUniformBufferSize,
-                       HasDesiredSwapchainImageNum)
-                   => ResIO (Dict HasUniformBuffers)
-initUniformBuffers = do
-  SurfaceCapabilitiesKHR{minImageCount} <-
-    getPhysicalDeviceSurfaceCapabilitiesKHR ?physicalDevice ?surface
+initGraphicsUniformBuffers :: (HasLogger, HasSurface, HasPhysicalDevice, HasDevice,
+                               HasGraphicsUniformBufferSize, HasDesiredSwapchainImageNum)
+                           => ResIO (Dict HasGraphicsUniformBuffers)
+initGraphicsUniformBuffers = do
+  surfCaps <- getPhysicalDeviceSurfaceCapabilitiesKHR ?physicalDevice ?surface
 
   -- We need at least as many buffers as we have images
-  let numBuffers = max (fromIntegral minImageCount) (fromIntegral ?desiredSwapchainImageNum)
-      bufInfo = zero{ size = ?uniformBufferSize
+  let numBuffers = max (fromIntegral surfCaps.minImageCount) (fromIntegral ?desiredSwapchainImageNum)
+      bufInfo = zero{ size = ?graphicsUniformBufferSize
                     , usage = BUFFER_USAGE_UNIFORM_BUFFER_BIT
                     , sharingMode = SHARING_MODE_EXCLUSIVE
                     } :: BufferCreateInfo '[]
@@ -340,22 +355,47 @@ initUniformBuffers = do
   buffers <- V.replicateM numBuffers do
     ((_, buffer), (_, memory)) <- constructBuffer bufInfo properties
     pure (buffer, memory)
-  let ?uniformBuffers = buffers
+  let ?graphicsUniformBuffers = buffers
 
   logDebug "Created uniform buffers."
 
   pure Dict
 
-initDescriptorSetLayout :: (HasDevice, HasDescriptorSetLayoutInfo)
-                        => ResIO (Dict HasDescriptorSetLayout)
-initDescriptorSetLayout = do
-  (_, layout) <- withDescriptorSetLayout ?device ?descriptorSetLayoutInfo Nothing allocate
-  let ?descriptorSetLayout = layout
+initComputeUniformBuffer :: (HasLogger, HasPhysicalDevice, HasDevice,
+                              HasComputeUniformBufferSize)
+                          => ResIO (Dict HasComputeUniformBuffer)
+initComputeUniformBuffer = do
+  let bufInfo = zero{ size = ?computeUniformBufferSize
+                    , usage = BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                    , sharingMode = SHARING_MODE_EXCLUSIVE
+                    } :: BufferCreateInfo '[]
+      properties = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
+  ((_, buffer), (_, memory)) <- constructBuffer bufInfo properties
+  let ?computeUniformBuffer = (buffer, memory)
+
+  logDebug "Created uniform buffers."
+
+  pure Dict
+
+initGraphicsDescriptorSetLayout :: (HasDevice, HasGraphicsDescriptorSetLayoutInfo)
+                                => ResIO (Dict HasGraphicsDescriptorSetLayout)
+initGraphicsDescriptorSetLayout = do
+  (_, layout) <- withDescriptorSetLayout ?device ?graphicsDescriptorSetLayoutInfo Nothing allocate
+  let ?graphicsDescriptorSetLayout = layout
+  pure Dict
+
+initComputeDescriptorSetLayout :: (HasDevice, HasComputeDescriptorSetLayoutInfo)
+                               => ResIO (Dict HasComputeDescriptorSetLayouts)
+initComputeDescriptorSetLayout = do
+  layouts <- forM ?computeDescriptorSetLayoutInfo \layoutInfo ->
+    snd <$> withDescriptorSetLayout ?device layoutInfo Nothing allocate
+  let ?computeDescriptorSetLayouts = layouts
   pure Dict
 
 initializeVulkan :: (HasLogger, HasConfig, HasShaderPaths, HasVulkanConfig)
-                 => (HasVulkanResources => ResIO ()) -> ResIO (Dict HasVulkanResources)
-initializeVulkan setupGraphicsCommands = do
+                 => (HasVulkanResources => ResIO ()) -> (HasVulkanResources => ResIO ())
+                 -> ResIO (Dict HasVulkanResources)
+initializeVulkan setupGraphicsCommands setupComputeCommands = do
   Dict <- initGLFW
   Dict <- initValidationLayers
   Dict <- initWindow
@@ -364,11 +404,15 @@ initializeVulkan setupGraphicsCommands = do
   Dict <- initPhysicalDevice
   Dict <- initDevice
   Dict <- initQueues
-  Dict <- initCommandPool
+  Dict <- initCommandPools
   Dict <- initVertexBuffer
-  Dict <- initUniformBuffers
-  Dict <- initDescriptorSetLayout
+  Dict <- initGraphicsUniformBuffers
+  Dict <- initGraphicsDescriptorSetLayout
   Dict <- initGraphicsMutables
+  Dict <- initComputeUniformBuffer
+  Dict <- initComputeDescriptorSetLayout
+  let ?computeStorageBuffer = ?vertexBuffer
+  Dict <- initComputeMutables
   Dict <- initSyncs
 
-  setupGraphicsCommands $> Dict
+  setupGraphicsCommands *> setupComputeCommands $> Dict

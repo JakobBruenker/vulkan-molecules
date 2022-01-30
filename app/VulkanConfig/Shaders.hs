@@ -5,6 +5,8 @@
 
 module VulkanConfig.Shaders where
 
+import GHC.Records
+
 import FIR
 import FIR.Syntax.Labels
 import Math.Linear
@@ -13,25 +15,31 @@ import Data.Foldable (sequence_)
 import RIO.FilePath ((</>))
 
 import VulkanSetup.Types
+import VulkanConfig.FIRUtils ()
+import VulkanConfig.Pipeline (numVertices)
 
 type UpdatePosLocalSize = 256
 
-
 type UpdatePosDefs =
-  '[ "positions" ':-> StorageBuffer [DescriptorSet 1, Binding 0      ]
+  -- TODO
+  -- this produces a validation error. fixed by adding %positions at the end of the OpEntryPoint line.
+  -- might have to add NonWritable or NonReadable though, and split the buffer in two, idk
+  -- EDIT: this is probably wrong, delete it if so, nothing to worry about I think
+  '[ "ubo"       ':-> Uniform      '[DescriptorSet 0, Binding 0      ] UniformInput
+   , "positions" ':-> StorageBuffer [DescriptorSet 1, Binding 0      ]
                       (Struct '["posArray" ':-> RuntimeArray (Struct '[ "pos" ':-> V 2 Float
                                                                       , "col" ':-> V 3 Float
                                                                       ])])
-   , "ubo"       ':-> Uniform      '[DescriptorSet 0, Binding 0      ] UniformInput
    , "main"      ':-> EntryPoint   '[LocalSize UpdatePosLocalSize 1 1] Compute
    ]
 
 updatePos :: Module UpdatePosDefs
 updatePos = Module $ entryPoint @"main" @Compute do
-  gid <- use @(Name "gl_GlobalInvocationID" :.: Swizzle "x")
-  positions <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) gid
-  assign @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) gid $
-    over @(Name "col" :.: Swizzle "g") (+ 0.01) positions
+  gid <- #gl_GlobalInvocationID <<&>> \i -> i.x
+  when (gid < Lit numVertices) do
+    positions <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) gid
+    assign @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) gid $
+      over @(Name "col" :.: Index 1) (+ 0.001) positions
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -54,21 +62,19 @@ type VertexDefs =
 
 vertex :: ShaderModule "main" VertexShader VertexDefs _
 vertex = shader do
-  time <- use @(Name "ubo" :.: Name "time")
-  windowWidth <- use @(Name "ubo" :.: Name "windowWidth")
-  windowHeight <- use @(Name "ubo" :.: Name "windowHeight")
+  ubo <- #ubo
+  floatWidth <- let' $ fromIntegral ubo.windowWidth
+  floatHeight <- let' $ fromIntegral ubo.windowHeight
 
-  phi <- let' $ time / 100
+  phi <- let' $ ubo.time / 100
   position <- #position
-  scl <- let' if windowHeight < windowWidth
-              then Mat22 (fromIntegral windowHeight / fromIntegral windowWidth) 0 0 1
-              else Mat22 1 0 0 (fromIntegral windowWidth / fromIntegral windowHeight)
+  scl <- let' if floatHeight < floatWidth
+              then Mat22 (floatHeight / floatWidth) 0 0 1
+              else Mat22 1 0 0 (floatWidth / floatHeight)
   rot <- let' $ Mat22 (cos phi) (sin phi) (-(sin phi)) (cos phi)
-  pos' <- let' $ (scl !*! rot) !*^ position
-  #gl_Position .= Vec4 (view @(Swizzle "x") pos') (view @(Swizzle "y") pos') 0 1
+  #gl_Position .= (scl !*! rot) !*^ position <!> Vec2 0 1
   color <- #color
-  #vertColor .=
-    Vec4 (view @(Swizzle "x") color) (view @(Swizzle "y") color) (view @(Swizzle "z") color) 0.3
+  #vertColor .= Vec4 color.r color.g color.b 0.3
   #gl_PointSize .= 40
 
 type FragmentDefs =
@@ -102,12 +108,14 @@ shaderPaths :: Dict HasShaderPaths
 shaderPaths = Dict
   where ?vertexShaderPath = vertexShaderPath
         ?fragmentShaderPath = fragmentShaderPath
-        ?updatePosPath = updatePosPath
+        ?computeShaderPath = updatePosPath
 
 compileAllShaders :: IO ()
 compileAllShaders = sequence_
   [ compileTo vertexShaderPath spirv vertex
   , compileTo fragmentShaderPath spirv fragment
+  -- for some reason this shader isn't being compiled right now.
+  -- replacing updatePos with fragment makes it compile, but it used to compile as is...
   , compileTo updatePosPath spirv updatePos
   ]
-  where spirv = [SPIRV $ Version 1 0]
+  where spirv = [SPIRV $ Version 1 3]

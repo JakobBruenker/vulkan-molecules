@@ -3,19 +3,11 @@
 module VulkanSetup.ComputeMutables where
 
 import RIO hiding (logDebug, logInfo, logWarn, logError)
-import RIO.Vector qualified as V
-import RIO.NonEmpty qualified as NE
+import qualified RIO.Vector as V
+import qualified RIO.Vector.Partial as V -- TODO get rid of this import
 
-import Control.Lens (both, allOf, ifor_, Ixed (ix))
-import Data.Bits ((.|.))
-import Data.Foldable (find)
-import Data.List (nub)
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, ResIO)
-import Data.Vector.Storable.Sized qualified as Sized
-import Data.Tuple.Extra (dupe)
 import Foreign.Storable.Tuple ()
-
-import Graphics.UI.GLFW qualified as GLFW
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , IOSSurfaceCreateInfoMVK(view)
@@ -30,330 +22,118 @@ import Utils
 import VulkanSetup.Types
 import VulkanSetup.Utils
 
-initGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
-                         HasUniformBuffers)
-                     => ResIO (Dict HasGraphicsMutables)
-initGraphicsMutables = do
-  graphicsMutables <- mkMResources =<< constructGraphicsMutables
-  let ?graphicsMutables = graphicsMutables
+initComputeMutables :: (HasLogger, HasComputeShaderPath, HasVulkanConfig,
+                       HasDevice, HasComputeDescriptorSetLayouts, HasComputeUniformBuffer,
+                       HasComputeStorageBuffer, HasComputeCommandPool)
+                     => ResIO (Dict HasComputeMutables)
+initComputeMutables = do
+  computeMutables <- mkMResources =<< constructComputeMutables
+  let ?computeMutables = computeMutables
   pure Dict
 
-constructGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
-                              HasUniformBuffers)
-                          => ResIO ([ReleaseKey], GraphicsMutables)
-constructGraphicsMutables = do
-  scInfo@(SwapchainCreateInfoKHR{ imageExtent = swapchainExtent
-                                , imageFormat = swapchainFormat
-                                })        <- swapchainCreateInfo
-  (swapchainKey , swapchain             ) <- constructSwapchain scInfo
-  (renderPassKey, renderPass            ) <- constructGraphicsRenderPass swapchainFormat
-  (layoutKey    , graphicsPipelineLayout) <- constructGraphicsPipelineLayout
-  (pipelineKey  , graphicsPipeline      ) <-
-    constructGraphicsPipeline renderPass swapchainExtent graphicsPipelineLayout
-  (imageKeys    , imageRelateds         ) <-
-    constructImageRelateds swapchainExtent swapchainFormat renderPass swapchain
+constructComputeMutables :: (HasLogger, HasComputeShaderPath, HasVulkanConfig,
+                             HasDevice, HasComputeDescriptorSetLayouts, HasComputeUniformBuffer,
+                             HasComputeStorageBuffer, HasComputeCommandPool)
+                          => ResIO ([ReleaseKey], ComputeMutables)
+constructComputeMutables = do
+  (layoutKey    , pipelineLayout ) <- constructComputePipelineLayout
+  (pipelineKey  , pipeline       ) <- constructComputePipeline pipelineLayout
+  (dsKey        , descriptorSets ) <- constructDescriptorSets
+  (cmdBufKey    , commandBuffer  ) <- constructCommandBuffer
 
-  pure ([swapchainKey, renderPassKey, layoutKey, pipelineKey] <> imageKeys, MkGraphicsMutables{..})
+  pure ([layoutKey, pipelineKey, dsKey, cmdBufKey], MkComputeMutables{..})
 
-constructSwapchain :: (HasLogger, HasDevice)
-                   => SwapchainCreateInfoKHR '[] -> ResIO (ReleaseKey, SwapchainKHR)
-constructSwapchain scInfo = do
-  swapchain <- withSwapchainKHR ?device scInfo Nothing allocate
-  logDebug "Created swapchain."
-  pure swapchain
+constructCommandBuffer :: (HasDevice, HasComputeCommandPool)
+                       => ResIO (ReleaseKey, CommandBuffer)
+constructCommandBuffer = do
+  let commandBuffersInfo = zero{ commandPool = ?computeCommandPool
+                               , level = COMMAND_BUFFER_LEVEL_PRIMARY
+                               , commandBufferCount = 1
+                               }
+  withCommandBuffers ?device commandBuffersInfo allocate >>= \case
+    (key, [buffer]) -> pure (key, buffer)
+    (_, buffers) -> throwIO $ VkWrongNumberOfCommandBuffers 1 (fromIntegral $ V.length buffers)
 
-waitWhileMinimized :: (HasWindow, MonadIO m) => m ()
-waitWhileMinimized = do
-  fix \loop -> do
-    dimensions <- liftIO (GLFW.getFramebufferSize ?window)
-    when (allOf both (== 0) dimensions) $ liftIO GLFW.waitEvents *> loop
+constructDescriptorSets :: (HasDevice, HasComputeUniformBuffer, HasComputeDescriptorSetLayoutInfo,
+                            HasComputeDescriptorSetLayouts, HasComputeUniformBufferSize,
+                            HasComputeStorageBuffer, HasVertexBufferInfo)
+                        => ResIO (ReleaseKey, Vector DescriptorSet)
+constructDescriptorSets = do
+  let poolSizes = ?computeDescriptorSetLayoutInfo <&> \layoutInfo ->
+        zero{ descriptorCount = sum (layoutInfo.bindings <&> \b -> b.descriptorCount)
+            , type' = (V.head layoutInfo.bindings).descriptorType
+            }
+      poolInfo = zero{poolSizes, maxSets = 2}
+  (poolKey, descriptorPool) <- withDescriptorPool ?device poolInfo Nothing allocate
 
-swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources, HasDesiredSwapchainImageNum)
-                    => m (SwapchainCreateInfoKHR '[])
-swapchainCreateInfo = do
+  let allocInfo = zero{descriptorPool, setLayouts = ?computeDescriptorSetLayouts}
+  descriptorSets <- allocateDescriptorSets ?device allocInfo
 
-  waitWhileMinimized
+  let uniformBufferInfo = [ zero{ buffer = fst ?computeUniformBuffer
+                                , offset = 0
+                                , range = ?computeUniformBufferSize
+                                } :: DescriptorBufferInfo
+                          ]
+      storageBufferInfo = [ zero{ buffer = ?computeStorageBuffer
+                                , offset = 0
+                                , range = ?vertexBufferInfo.size
+                                } :: DescriptorBufferInfo
+                          ]
+  -- TODO this isn't really fully general yet for other descriptor set layouts
+  let descriptorWrites = (\f -> V.zipWith f ?computeDescriptorSetLayoutInfo descriptorSets)
+        \layoutInfo descriptorSet -> let type' = (V.head layoutInfo.bindings).descriptorType in
+           SomeStruct zero{ dstSet = descriptorSet
+                          , dstBinding = 0
+                          , dstArrayElement = 0
+                          , descriptorType = type'
+                          , descriptorCount = 1
+                          , bufferInfo = if type' == DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                         then uniformBufferInfo
+                                         else storageBufferInfo
+                          } :: SomeStruct WriteDescriptorSet
+  updateDescriptorSets ?device descriptorWrites []
+  pure (poolKey, descriptorSets)
 
-  SurfaceCapabilitiesKHR{ currentExtent, currentTransform
-                        , minImageExtent, maxImageExtent
-                        , minImageCount, maxImageCount
-                        } <- getPhysicalDeviceSurfaceCapabilitiesKHR ?physicalDevice ?surface
-  let SurfaceFormatKHR{format = imageFormat, colorSpace = imageColorSpace} = liftA2 fromMaybe NE.head
-        (find (== SurfaceFormatKHR FORMAT_R8G8B8A8_SRGB COLOR_SPACE_SRGB_NONLINEAR_KHR))
-        ?swapchainFormats
-      queueFamilyIndices = V.fromList $ nub [?graphicsQueueFamily, ?presentQueueFamily]
-
-  imageExtent <- do
-    let Extent2D{width = currentWidth} = currentExtent
-        Extent2D{width = minWidth, height = minHeight} = minImageExtent
-        Extent2D{width = maxWidth, height = maxHeight} = maxImageExtent
-    if | currentWidth /= maxBound -> pure currentExtent
-       | otherwise -> do
-           (fbWidth, fbHeight) <- over both fromIntegral <$> liftIO (GLFW.getFramebufferSize ?window)
-           let width = clamp (minWidth, maxWidth) fbWidth
-               height = clamp (minHeight, maxHeight) fbHeight
-           pure Extent2D{width, height}
-
-  let imageSharingMode | length queueFamilyIndices <= 1 = SHARING_MODE_EXCLUSIVE
-                       | otherwise                      = SHARING_MODE_CONCURRENT
-      imageCount = clamp (minImageCount, bool maxBound maxImageCount $ maxImageCount > 0) $
-                         fromIntegral ?desiredSwapchainImageNum
-      presentModesByPriority = [ PRESENT_MODE_MAILBOX_KHR
-                               , PRESENT_MODE_IMMEDIATE_KHR
-                               , PRESENT_MODE_FIFO_RELAXED_KHR
-                               , PRESENT_MODE_FIFO_KHR
-                               ] :: [PresentModeKHR]
-      presentMode = fromMaybe (NE.head ?swapchainPresentModes) $
-        find (`elem` ?swapchainPresentModes) presentModesByPriority
-
-  logDebug $ "Using " <> displayShow presentMode <> "."
-
-  pure zero{ surface = ?surface
-           , minImageCount = imageCount
-           , imageFormat
-           , imageColorSpace
-           , imageExtent
-           , imageArrayLayers = 1
-           , imageUsage = IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-           , imageSharingMode
-           , queueFamilyIndices
-           , preTransform = currentTransform
-           , compositeAlpha = COMPOSITE_ALPHA_OPAQUE_BIT_KHR
-           , presentMode
-           , clipped = True
-           }
-
-withShader :: (MonadUnliftIO m, HasDevice) => FilePath -> (ShaderModule -> m r) -> m r
-withShader path action = do
-  bytes <- readFileBinary path
-  withShaderModule ?device zero{code = bytes} Nothing bracket action
-
-constructGraphicsPipelineLayout :: (HasDevice, HasDescriptorSetLayout, HasGraphicsPipelineLayoutInfo)
+constructComputePipelineLayout :: (HasDevice, HasComputeDescriptorSetLayouts,
+                                   HasComputePipelineLayoutInfo)
                                 => ResIO (ReleaseKey, PipelineLayout)
-constructGraphicsPipelineLayout =
-  withPipelineLayout
-    ?device ?graphicsPipelineLayoutInfo{setLayouts = [?descriptorSetLayout]} Nothing allocate
+constructComputePipelineLayout = withPipelineLayout
+  ?device ?computePipelineLayoutInfo{setLayouts = ?computeDescriptorSetLayouts} Nothing allocate
 
-constructGraphicsPipeline :: (HasLogger, HasDevice, HasShaderPaths, HasVulkanConfig)
-                          => RenderPass -> Extent2D -> PipelineLayout -> ResIO (ReleaseKey, Pipeline)
-constructGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
-  let vertexInputState = Just ?vertexInputInfo
-      inputAssemblyState = Just zero{topology = PRIMITIVE_TOPOLOGY_POINT_LIST}
-      viewport = zero{ width = fromIntegral width
-                     , height = fromIntegral height
-                     , minDepth = 0
-                     , maxDepth = 1
-                     }
-      scissor = zero{extent} :: Rect2D
-      viewportState = Just $ SomeStruct zero{ viewports = [viewport]
-                                            , scissors = [scissor]
-                                            }
-      rasterizationState = SomeStruct zero{ polygonMode = POLYGON_MODE_FILL
-                                          , lineWidth = 1
-                                          , cullMode = CULL_MODE_BACK_BIT
-                                          , frontFace = FRONT_FACE_CLOCKWISE
-                                          }
-      multisampleState = Just $ SomeStruct zero{ rasterizationSamples = SAMPLE_COUNT_1_BIT
-                                               , minSampleShading = 1
-                                               }
-      blendAttachment = zero{ colorWriteMask = COLOR_COMPONENT_R_BIT
-                                           .|. COLOR_COMPONENT_G_BIT
-                                           .|. COLOR_COMPONENT_B_BIT
-                                           .|. COLOR_COMPONENT_A_BIT
-                            , blendEnable = True
-                            , srcColorBlendFactor = BLEND_FACTOR_SRC_ALPHA
-                            , dstColorBlendFactor = BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-                            , colorBlendOp = BLEND_OP_ADD
-                            , srcAlphaBlendFactor = BLEND_FACTOR_ONE
-                            , dstAlphaBlendFactor = BLEND_FACTOR_ZERO
-                            , alphaBlendOp = BLEND_OP_ADD
-                            }
-      colorBlendState = Just $ SomeStruct zero{ logicOpEnable = False
-                                              , attachments = [blendAttachment]
-                                              }
-
+constructComputePipeline :: (HasLogger, HasDevice, HasComputeShaderPath)
+                         => PipelineLayout -> ResIO (ReleaseKey, Pipeline)
+constructComputePipeline layout = do
   (releasePipelines, (_, pipelines)) <-
-    withShader ?vertexShaderPath \vertModule ->
-      withShader ?fragmentShaderPath \fragModule -> do
+    withShader ?computeShaderPath \computeModule -> do
 
-        let vertShaderStageInfo = zero{ stage = SHADER_STAGE_VERTEX_BIT
-                                      , module' = vertModule
-                                      , name = "main"
-                                      }
-            fragShaderStageInfo = zero{ stage = SHADER_STAGE_FRAGMENT_BIT
-                                      , module' = fragModule
-                                      , name = "main"
-                                      }
-            shaderStages = SomeStruct <$> [vertShaderStageInfo, fragShaderStageInfo]
-            pipelineInfo = pure $ SomeStruct zero{ stages = shaderStages
-                                                 , vertexInputState
-                                                 , inputAssemblyState
-                                                 , viewportState
-                                                 , rasterizationState
-                                                 , multisampleState
-                                                 , colorBlendState
-                                                 , layout
-                                                 , renderPass
-                                                 , subpass = 0
-                                                 }
+      let computeShaderStageInfo = zero{ stage = SHADER_STAGE_COMPUTE_BIT
+                                       , module' = computeModule
+                                       , name = "main"
+                                       }
+          shaderStage = SomeStruct computeShaderStageInfo
+          pipelineInfo = pure $ SomeStruct zero{ stage = shaderStage
+                                               , layout
+                                               }
 
-        withGraphicsPipelines ?device zero pipelineInfo Nothing allocate
+      withComputePipelines ?device zero pipelineInfo Nothing allocate
 
   graphicsPipeline <- case pipelines of
     [pipeline] -> pure (releasePipelines, pipeline)
     (length -> num) -> throwIO $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
 
-  logDebug "Created pipeline."
+  logDebug "Created compute pipeline."
   pure graphicsPipeline
 
-constructGraphicsRenderPass :: (HasLogger, HasGraphicsResources)
-                            => Format -> ResIO (ReleaseKey, RenderPass)
-constructGraphicsRenderPass format = do
-  let colorAttachment = zero{ format
-                            , samples = SAMPLE_COUNT_1_BIT
-                            , loadOp = ATTACHMENT_LOAD_OP_CLEAR
-                            , storeOp = ATTACHMENT_STORE_OP_STORE
-                            , stencilLoadOp = ATTACHMENT_LOAD_OP_DONT_CARE
-                            , stencilStoreOp = ATTACHMENT_STORE_OP_DONT_CARE
-                            , initialLayout = IMAGE_LAYOUT_UNDEFINED
-                            , finalLayout = IMAGE_LAYOUT_PRESENT_SRC_KHR
-                            } :: AttachmentDescription
-      colorAttachmentRef = zero{ attachment = 0
-                               , layout = IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-                               } :: AttachmentReference
-      subpass = zero{ pipelineBindPoint = PIPELINE_BIND_POINT_GRAPHICS
-                    , colorAttachments = [colorAttachmentRef]
-                    } :: SubpassDescription
-      dependency = zero{ srcSubpass = SUBPASS_EXTERNAL
-                       , dstSubpass = 0
-                       , srcStageMask = PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                       , srcAccessMask = zero
-                       , dstStageMask = PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                       , dstAccessMask = ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-                       } :: SubpassDependency
-      renderPassInfo = zero{ attachments = [colorAttachment]
-                           , subpasses = [subpass]
-                           , dependencies = [dependency]
-                           } :: RenderPassCreateInfo '[]
-
-  renderPass <- withRenderPass ?device renderPassInfo Nothing allocate
-
-  logDebug "Created render pass."
-  pure renderPass
-
-constructImageRelateds :: (HasLogger, HasDevice, HasCommandPool,
-                           HasDescriptorSetLayout, HasUniformBufferSize, HasUniformBuffers)
-                       => Extent2D -> Format -> RenderPass -> SwapchainKHR
-                       -> ResIO ([ReleaseKey], Vector ImageRelated)
-constructImageRelateds extent format renderPass swapchain = do
-  (_, images) <- getSwapchainImagesKHR ?device swapchain
-  let count = fromIntegral $ length images
-  (cmdBufKey, commandBuffers) <- constructCommandBuffers count
-  (dstKey, descriptorSets) <- constructDescriptorSets count
-  (releaseKeys, imageRelateds) <- fmap V.unzip . sequence $
-    V.zipWith3 (constructImageRelated extent format renderPass) images commandBuffers descriptorSets
-
-  logDebug "Created images."
-  pure (cmdBufKey : dstKey : concat releaseKeys, imageRelateds)
-
-constructCommandBuffers :: (HasDevice, HasCommandPool)
-                        => Natural -> ResIO (ReleaseKey, Vector CommandBuffer)
-constructCommandBuffers count = do
-  let commandBuffersInfo = zero{ commandPool = ?commandPool
-                               , level = COMMAND_BUFFER_LEVEL_PRIMARY
-                               , commandBufferCount = fromIntegral count
-                               }
-  withCommandBuffers ?device commandBuffersInfo allocate
-
-constructDescriptorSets :: (HasDevice, HasDescriptorSetLayout, HasUniformBufferSize, HasUniformBuffers)
-                        => Natural -> ResIO (ReleaseKey, Vector DescriptorSet)
-constructDescriptorSets count = do
-  let descriptorCount :: Integral a => a
-      descriptorCount = fromIntegral count
-      poolSize = zero{descriptorCount, type' = DESCRIPTOR_TYPE_UNIFORM_BUFFER}
-      poolInfo = zero{poolSizes = [poolSize], maxSets = descriptorCount}
-  (poolKey, descriptorPool) <- withDescriptorPool ?device poolInfo Nothing allocate
-
-  let allocInfo = zero{descriptorPool, setLayouts = V.replicate descriptorCount ?descriptorSetLayout}
-  descriptorSets <- allocateDescriptorSets ?device allocInfo
-
-  ifor_ descriptorSets \i dstSet -> do
-    buffer <- maybe
-      do throwIO VkUniformBufferIndexOutOfRange
-      do pure . fst
-      do ?uniformBuffers^?ix i
-    let bufferInfo = [ zero{ buffer
-                           , offset = 0
-                           , range = ?uniformBufferSize
-                           } :: DescriptorBufferInfo
-                     ]
-        descriptorWrite = SomeStruct zero{ dstSet
-                                         , dstBinding = 0
-                                         , dstArrayElement = 0
-                                         , descriptorType = DESCRIPTOR_TYPE_UNIFORM_BUFFER
-                                         , descriptorCount = 1
-                                         , bufferInfo
-                                         } :: SomeStruct WriteDescriptorSet
-    updateDescriptorSets ?device [descriptorWrite] []
-  pure (poolKey, descriptorSets)
-
-constructImageRelated :: HasDevice
-                      => Extent2D -> Format -> RenderPass -> Image -> CommandBuffer -> DescriptorSet
-                      -> ResIO ([ReleaseKey], ImageRelated)
-constructImageRelated extent format renderPass image commandBuffer descriptorSet = do
-  imageInFlight                 <- constructImageInFlight
-  (imgViewKey , imageView     ) <- constructImageView image format
-  (framebufKey, framebuffer   ) <- constructFramebuffer extent renderPass imageView
-  pure ([imgViewKey, framebufKey], MkImageRelated{..})
-
-constructImageInFlight :: MonadIO m => m (IORef (Maybe Fence))
-constructImageInFlight = newIORef Nothing
-
-constructImageView :: HasDevice => Image -> Format -> ResIO (ReleaseKey, ImageView)
-constructImageView image format = do
-  let ivInfo = zero{ viewType = IMAGE_VIEW_TYPE_2D
-                   , format
-                   , subresourceRange
-                   }
-      subresourceRange = zero{ aspectMask = IMAGE_ASPECT_COLOR_BIT
-                             , levelCount = 1
-                             , layerCount = 1
-                             }
-
-  withImageView ?device ivInfo{image} Nothing allocate
-
-constructFramebuffer :: HasDevice
-                     => Extent2D -> RenderPass -> ImageView -> ResIO (ReleaseKey, Framebuffer)
-constructFramebuffer Extent2D{width, height} renderPass imageView = do
-  let fbInfo = zero{ renderPass
-                   , width
-                   , height
-                   , layers = 1
-                   }
-  withFramebuffer ?device fbInfo{attachments = [imageView]} Nothing allocate
-
-initSyncs :: (HasLogger, HasDevice) => ResIO (Dict HasSyncs)
-initSyncs = do
-  (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
-    snd <$> withSemaphore ?device zero Nothing allocate
-  inFlight <- Sized.replicateM $
-    snd <$> withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate
-  let ?imageAvailable = imageAvailable
-      ?renderFinished = renderFinished
-      ?inFlight       = inFlight
-
-  logDebug "Created syncs."
-  pure Dict
-
-recreateSwapchain :: (HasLogger, HasVulkanResources)
-                  => (HasVulkanResources => ResIO ()) -> ResIO ()
-recreateSwapchain setupCommands = do
-  logDebug "Recreating swapchain..."
+recreateComputePipeline :: (HasLogger, HasVulkanResources, HasComputeResources,
+                            HasComputeStorageBuffer)
+                        => (HasVulkanResources => ResIO ()) -> ResIO ()
+recreateComputePipeline setupCommands = do
+  logDebug "Recreating compute pipeline..."
 
   writeIORef ?framebufferResized False
 
   deviceWaitIdle ?device
 
-  writeRes ?graphicsMutables constructGraphicsMutables
+  writeRes ?computeMutables constructComputeMutables
 
   setupCommands

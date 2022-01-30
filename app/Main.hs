@@ -52,11 +52,15 @@ runApp = runResourceT do
 
   Dict <- pure shaderPaths
   Dict <- vulkanConfig
-  Dict <- initializeVulkan setupGraphicsCommands
+  Dict <- initializeVulkan setupGraphicsCommands setupComputeCommands
 
   mainLoop
 
   logInfo "Goodbye!"
+
+data ShouldRecreateSwapchain = Don'tRecreate
+                             | PleaseRecreate
+                             deriving Eq
 
 mainLoop :: (HasLogger, HasVulkanResources) => ResIO ()
 mainLoop = do
@@ -79,7 +83,15 @@ mainLoop = do
 
 drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecreateSwapchain
 drawFrame currentFrame = do
-  MkGraphicsMutables{swapchain, imageRelateds} <- readRes ?graphicsMutables
+  -- compute stuff
+  computeMutables <- readRes ?computeMutables
+  let computeSubmitInfo = pure . SomeStruct $
+        zero{commandBuffers = [computeMutables.commandBuffer.commandBufferHandle]}
+  queueSubmit ?computeQueue computeSubmitInfo NULL_HANDLE
+
+
+  -- graphics stuff
+  mutables <- readRes ?graphicsMutables
 
   let ixSync :: Storable a => Sized.Vector MaxFramesInFlight a -> a
       ixSync = view $ Sized.ix currentFrame
@@ -87,54 +99,53 @@ drawFrame currentFrame = do
   _result <- waitForFences ?device [ixSync ?inFlight] True maxBound
 
   (imageResult, imageIndex) <-
-    acquireNextImageKHR ?device swapchain maxBound (ixSync ?imageAvailable) NULL_HANDLE
+    acquireNextImageKHR ?device mutables.swapchain maxBound (ixSync ?imageAvailable) NULL_HANDLE
 
-  MkImageRelated{commandBuffer, imageInFlight} <- fromMaybeM
+  imageRelated <- fromMaybeM
     do throwIO VkCommandBufferIndexOutOfRange
-    do pure $ imageRelateds^?ix (fromIntegral imageIndex)
+    do pure $ mutables.imageRelateds ^? ix (fromIntegral imageIndex)
 
-  imageInFlightFence <- readIORef imageInFlight
+  imageInFlightFence <- readIORef imageRelated.imageInFlight
 
   -- Check if a previous frame is using this image (i.e. there is its fence to wait on)
   whenJust imageInFlightFence \fence -> void $ waitForFences ?device [fence] True maxBound
 
   -- Mark the image as now being in use by this frame
-  writeIORef imageInFlight (Just $ ixSync ?inFlight)
+  writeIORef imageRelated.imageInFlight (Just $ ixSync ?inFlight)
 
   (windowWidth, windowHeight) <- over both fromIntegral <$> liftIO (GLFW.getFramebufferSize ?window)
-  updateUniformBuffer imageIndex windowWidth windowHeight
+  updateGraphicsUniformBuffer imageIndex windowWidth windowHeight
 
   let submitInfo = pure . SomeStruct $
-        SubmitInfo{ next = ()
-                  , waitSemaphores = [ixSync ?imageAvailable]
-                  , waitDstStageMask = [PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT]
-                  , commandBuffers = [commandBufferHandle commandBuffer]
-                  , signalSemaphores = [ixSync ?renderFinished]
-                  }
+        zero{ waitSemaphores = [ixSync ?imageAvailable]
+            , waitDstStageMask = [PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT]
+            , commandBuffers = [imageRelated.commandBuffer.commandBufferHandle]
+            , signalSemaphores = [ixSync ?renderFinished]
+            }
 
   resetFences ?device [ixSync ?inFlight]
   queueSubmit ?graphicsQueue submitInfo (ixSync ?inFlight)
 
-  let presentInfo = PresentInfoKHR{ next = ()
-                                  , waitSemaphores = [ixSync ?renderFinished]
-                                  , swapchains = [swapchain]
-                                  , imageIndices = [imageIndex]
-                                  , results = zero
-                                  }
+  let presentInfo = zero{ waitSemaphores = [ixSync ?renderFinished]
+                        , swapchains = [mutables.swapchain]
+                        , imageIndices = [imageIndex]
+                        , results = zero
+                        }
   queueResult <- queuePresentKHR ?presentQueue presentInfo
 
   pure if | elem @[] SUBOPTIMAL_KHR [imageResult, queueResult] -> PleaseRecreate
           | otherwise -> Don'tRecreate
 
-updateUniformBuffer :: (MonadUnliftIO m, HasDevice, HasUboData, HasUniformBuffers, HasUniformBufferSize)
-                    => Word32 -> Int32 -> Int32 -> m ()
-updateUniformBuffer currentImageIndex windowWidth windowHeight = do
-  MkUboData{uboUpdate, uboRef} <- pure ?uboData
-  time <- atomicModifyIORef' uboRef (dupe . uboUpdate (windowWidth, windowHeight))
+updateGraphicsUniformBuffer :: (MonadUnliftIO m, HasDevice, HasGraphicsUboData,
+                                HasGraphicsUniformBuffers, HasGraphicsUniformBufferSize)
+                            => Word32 -> Int32 -> Int32 -> m ()
+updateGraphicsUniformBuffer currentImageIndex windowWidth windowHeight = do
+  MkUboData{update, ref} <- pure ?graphicsUboData
+  time <- atomicModifyIORef' ref (dupe . update (windowWidth, windowHeight))
   memory <- maybe
     do throwIO VkUniformBufferIndexOutOfRange
     do pure . snd
-    do ?uniformBuffers^?ix (fromIntegral currentImageIndex)
-  withMappedMemory ?device memory 0 ?uniformBufferSize zero bracket \target ->
+    do ?graphicsUniformBuffers ^? ix (fromIntegral currentImageIndex)
+  withMappedMemory ?device memory 0 ?graphicsUniformBufferSize zero bracket \target ->
     liftIO $ with time \(castPtr -> source) ->
-      copyBytes target source $ fromIntegral ?uniformBufferSize
+      copyBytes target source $ fromIntegral ?graphicsUniformBufferSize

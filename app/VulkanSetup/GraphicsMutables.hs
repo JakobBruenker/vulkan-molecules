@@ -14,6 +14,7 @@ import Control.Monad.Trans.Resource (allocate, ReleaseKey, ResIO)
 import Data.Vector.Storable.Sized qualified as Sized
 import Data.Tuple.Extra (dupe)
 import Foreign.Storable.Tuple ()
+import Control.Monad.Loops (whileM_)
 
 import Graphics.UI.GLFW qualified as GLFW
 
@@ -31,7 +32,7 @@ import VulkanSetup.Types
 import VulkanSetup.Utils
 
 initGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
-                         HasUniformBuffers)
+                         HasGraphicsUniformBuffers)
                      => ResIO (Dict HasGraphicsMutables)
 initGraphicsMutables = do
   graphicsMutables <- mkMResources =<< constructGraphicsMutables
@@ -39,18 +40,18 @@ initGraphicsMutables = do
   pure Dict
 
 constructGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
-                              HasUniformBuffers)
+                              HasGraphicsUniformBuffers)
                           => ResIO ([ReleaseKey], GraphicsMutables)
 constructGraphicsMutables = do
-  scInfo@(SwapchainCreateInfoKHR{ imageExtent = swapchainExtent
-                                , imageFormat = swapchainFormat
-                                })        <- swapchainCreateInfo
-  (swapchainKey , swapchain             ) <- constructSwapchain scInfo
-  (renderPassKey, renderPass            ) <- constructGraphicsRenderPass swapchainFormat
-  (layoutKey    , graphicsPipelineLayout) <- constructGraphicsPipelineLayout
-  (pipelineKey  , graphicsPipeline      ) <-
-    constructGraphicsPipeline renderPass swapchainExtent graphicsPipelineLayout
-  (imageKeys    , imageRelateds         ) <-
+  scInfo <- swapchainCreateInfo
+  let swapchainExtent = scInfo.imageExtent
+      swapchainFormat = scInfo.imageFormat
+  (swapchainKey , swapchain     ) <- constructSwapchain scInfo
+  (renderPassKey, renderPass    ) <- constructGraphicsRenderPass swapchainFormat
+  (layoutKey    , pipelineLayout) <- constructGraphicsPipelineLayout
+  (pipelineKey  , pipeline      ) <-
+    constructGraphicsPipeline renderPass swapchainExtent pipelineLayout
+  (imageKeys    , imageRelateds) <-
     constructImageRelateds swapchainExtent swapchainFormat renderPass swapchain
 
   pure ([swapchainKey, renderPassKey, layoutKey, pipelineKey] <> imageKeys, MkGraphicsMutables{..})
@@ -63,10 +64,8 @@ constructSwapchain scInfo = do
   pure swapchain
 
 waitWhileMinimized :: (HasWindow, MonadIO m) => m ()
-waitWhileMinimized = do
-  fix \loop -> do
-    dimensions <- liftIO (GLFW.getFramebufferSize ?window)
-    when (allOf both (== 0) dimensions) $ liftIO GLFW.waitEvents *> loop
+waitWhileMinimized = liftIO $ whileM_ (allOf both (== 0) <$> GLFW.getFramebufferSize ?window)
+  GLFW.waitEvents
 
 swapchainCreateInfo :: (MonadIO m, HasLogger, HasGraphicsResources, HasDesiredSwapchainImageNum)
                     => m (SwapchainCreateInfoKHR '[])
@@ -123,24 +122,20 @@ swapchainCreateInfo = do
            , clipped = True
            }
 
-withShader :: (MonadUnliftIO m, HasDevice) => FilePath -> (ShaderModule -> m r) -> m r
-withShader path action = do
-  bytes <- readFileBinary path
-  withShaderModule ?device zero{code = bytes} Nothing bracket action
-
-constructGraphicsPipelineLayout :: (HasDevice, HasDescriptorSetLayout, HasGraphicsPipelineLayoutInfo)
+constructGraphicsPipelineLayout :: (HasDevice, HasGraphicsDescriptorSetLayout,
+                                    HasGraphicsPipelineLayoutInfo)
                                 => ResIO (ReleaseKey, PipelineLayout)
 constructGraphicsPipelineLayout =
   withPipelineLayout
-    ?device ?graphicsPipelineLayoutInfo{setLayouts = [?descriptorSetLayout]} Nothing allocate
+    ?device ?graphicsPipelineLayoutInfo{setLayouts = [?graphicsDescriptorSetLayout]} Nothing allocate
 
 constructGraphicsPipeline :: (HasLogger, HasDevice, HasShaderPaths, HasVulkanConfig)
                           => RenderPass -> Extent2D -> PipelineLayout -> ResIO (ReleaseKey, Pipeline)
-constructGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
+constructGraphicsPipeline renderPass extent layout = do
   let vertexInputState = Just ?vertexInputInfo
       inputAssemblyState = Just zero{topology = PRIMITIVE_TOPOLOGY_POINT_LIST}
-      viewport = zero{ width = fromIntegral width
-                     , height = fromIntegral height
+      viewport = zero{ width = fromIntegral extent.width
+                     , height = fromIntegral extent.height
                      , minDepth = 0
                      , maxDepth = 1
                      }
@@ -203,7 +198,7 @@ constructGraphicsPipeline renderPass extent@Extent2D{width, height} layout = do
     [pipeline] -> pure (releasePipelines, pipeline)
     (length -> num) -> throwIO $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
 
-  logDebug "Created pipeline."
+  logDebug "Created graphics pipeline."
   pure graphicsPipeline
 
 constructGraphicsRenderPass :: (HasLogger, HasGraphicsResources)
@@ -241,8 +236,9 @@ constructGraphicsRenderPass format = do
   logDebug "Created render pass."
   pure renderPass
 
-constructImageRelateds :: (HasLogger, HasDevice, HasCommandPool,
-                           HasDescriptorSetLayout, HasUniformBufferSize, HasUniformBuffers)
+constructImageRelateds :: (HasLogger, HasDevice, HasGraphicsCommandPool,
+                           HasGraphicsDescriptorSetLayout, HasGraphicsUniformBufferSize,
+                           HasGraphicsUniformBuffers)
                        => Extent2D -> Format -> RenderPass -> SwapchainKHR
                        -> ResIO ([ReleaseKey], Vector ImageRelated)
 constructImageRelateds extent format renderPass swapchain = do
@@ -256,16 +252,17 @@ constructImageRelateds extent format renderPass swapchain = do
   logDebug "Created images."
   pure (cmdBufKey : dstKey : concat releaseKeys, imageRelateds)
 
-constructCommandBuffers :: (HasDevice, HasCommandPool)
+constructCommandBuffers :: (HasDevice, HasGraphicsCommandPool)
                         => Natural -> ResIO (ReleaseKey, Vector CommandBuffer)
 constructCommandBuffers count = do
-  let commandBuffersInfo = zero{ commandPool = ?commandPool
+  let commandBuffersInfo = zero{ commandPool = ?graphicsCommandPool
                                , level = COMMAND_BUFFER_LEVEL_PRIMARY
                                , commandBufferCount = fromIntegral count
                                }
   withCommandBuffers ?device commandBuffersInfo allocate
 
-constructDescriptorSets :: (HasDevice, HasDescriptorSetLayout, HasUniformBufferSize, HasUniformBuffers)
+constructDescriptorSets :: (HasDevice, HasGraphicsDescriptorSetLayout,
+                            HasGraphicsUniformBufferSize, HasGraphicsUniformBuffers)
                         => Natural -> ResIO (ReleaseKey, Vector DescriptorSet)
 constructDescriptorSets count = do
   let descriptorCount :: Integral a => a
@@ -274,17 +271,18 @@ constructDescriptorSets count = do
       poolInfo = zero{poolSizes = [poolSize], maxSets = descriptorCount}
   (poolKey, descriptorPool) <- withDescriptorPool ?device poolInfo Nothing allocate
 
-  let allocInfo = zero{descriptorPool, setLayouts = V.replicate descriptorCount ?descriptorSetLayout}
+  let allocInfo =
+        zero{descriptorPool, setLayouts = V.replicate descriptorCount ?graphicsDescriptorSetLayout}
   descriptorSets <- allocateDescriptorSets ?device allocInfo
 
   ifor_ descriptorSets \i dstSet -> do
     buffer <- maybe
       do throwIO VkUniformBufferIndexOutOfRange
       do pure . fst
-      do ?uniformBuffers^?ix i
+      do ?graphicsUniformBuffers ^? ix i
     let bufferInfo = [ zero{ buffer
                            , offset = 0
-                           , range = ?uniformBufferSize
+                           , range = ?graphicsUniformBufferSize
                            } :: DescriptorBufferInfo
                      ]
         descriptorWrite = SomeStruct zero{ dstSet
