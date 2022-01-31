@@ -2,14 +2,14 @@
 
 module Main (main) where
 
-import RIO hiding (logDebug, logInfo, logWarn, logError, threadDelay)
+import RIO hiding (logDebug, logInfo, logWarn, logError)
 
-import Options.Applicative
+import Options.Applicative ((<**>), fullDesc, info, execParser, helper)
 import Control.Monad.Trans.Resource (runResourceT, ResIO)
 import Data.Finite (Finite, natToFinite)
 import Data.Tuple (swap)
 import qualified Data.Vector.Storable.Sized as Sized
-import Control.Monad.Extra (fromMaybeM, whenJust)
+import Control.Monad.Extra (fromMaybeM, whenJust, whenJustM)
 import Control.Lens (ix, (??), both)
 import Foreign (castPtr, with, copyBytes)
 import Control.Concurrent (forkIO)
@@ -57,13 +57,14 @@ runApp = runResourceT do
   Dict <- vulkanConfig
   Dict <- initializeVulkan setupGraphicsCommands setupComputeCommands
 
-  liftIO $ GLFW.setMouseButtonCallback ?window $ Just mouseButtonCallback
-
   killCompute <- newEmptyMVar
-  pauseCompute <- newEmptyMVar
+  continueCompute <- newMVar ()
 
   let ?killCompute = killCompute
-      ?pauseCompute = pauseCompute
+      ?continueCompute = continueCompute
+
+  liftIO $ GLFW.setMouseButtonCallback ?window $ Just mouseButtonCallback
+  liftIO $ GLFW.setKeyCallback ?window $ Just keyCallback
 
   for_ @[] [0..integralNatVal @MaxFramesInFlight - 1] copyGraphicsUniformBuffer
   copyComputeUniformBuffer
@@ -76,11 +77,17 @@ mouseButtonCallback :: HasVulkanResources => GLFW.MouseButtonCallback
 mouseButtonCallback _ _ state _ | state == GLFW.MouseButtonState'Pressed = updateComputeUniformBuffer
                                 | otherwise                              = pure ()
 
+keyCallback :: HasContinueCompute => GLFW.KeyCallback
+keyCallback _ key _ GLFW.KeyState'Pressed _ | GLFW.Key'Space <- key =
+  -- basically, fill the MVar if it was empty and vice versa
+  unlessM (tryPutMVar ?continueCompute ()) $ takeMVar ?continueCompute
+keyCallback _ _ _ _ _ = pure ()
+
 data ShouldRecreateSwapchain = Don'tRecreate
                              | PleaseRecreate
                              deriving Eq
 
-mainLoop :: (HasLogger, HasVulkanResources, HasKillCompute) => ResIO ()
+mainLoop :: (HasLogger, HasVulkanResources, HasContinueCompute, HasKillCompute) => ResIO ()
 mainLoop = do
   logDebug "Starting main loop."
 
@@ -95,8 +102,9 @@ mainLoop = do
         ex -> throwIO ex
       resized <- readIORef ?framebufferResized
       when (resized || shouldRecreate == PleaseRecreate) $ recreateSwapchain setupGraphicsCommands
-      -- TODO I don't think this is actually a reliable way to set the framerate
-      liftIO $ GLFW.waitEventsTimeout (1 / 60)
+      -- TODO This is not a reliable way to get a consistent framerate
+      threadDelay (1e6 `div` 60)
+      liftIO GLFW.pollEvents
 
       unlessM ?? loop (currentFrame + 1) $ liftIO $ GLFW.windowShouldClose ?window
 
@@ -112,7 +120,8 @@ enqueuesPerStep = 10
 -- This lets us ensure that there are always some commands in the queue.
 -- I'm not sure if that's actually necessary, compared to just using a single fence,
 -- but it seems reasonable.
-enqueueCompute :: (HasDevice, HasComputeMutables, HasComputeFences, HasComputeQueue, HasKillCompute)
+enqueueCompute :: (HasDevice, HasComputeMutables, HasComputeFences, HasComputeQueue,
+                   HasContinueCompute, HasKillCompute)
                => IO ()
 enqueueCompute = do
   computeMutables <- readRes ?computeMutables
@@ -126,6 +135,7 @@ enqueueCompute = do
       resetFences ?device [fence]
       replicateM_ (fromIntegral enqueuesPerStep - 1) $ queueSubmit ?computeQueue submitInfo NULL_HANDLE
       queueSubmit ?computeQueue submitInfo fence
+      _ <- (race `on` readMVar) ?continueCompute ?killCompute
       unlessM (isJust <$> tryTakeMVar ?killCompute) $ go submitInfo (swap fences)
 
 drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecreateSwapchain

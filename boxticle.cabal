@@ -82,6 +82,7 @@ executable boxticle
                         MultiWayIf,
                         NoStarIsType,
                         NoImplicitPrelude,
+                        NumDecimals,
                         OverloadedLabels,
                         OverloadedStrings,
                         OverloadedRecordDot,
