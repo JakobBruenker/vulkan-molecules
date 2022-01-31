@@ -1,4 +1,5 @@
 {-# LANGUAGE RebindableSyntax #-}
+{-# LANGUAGE OverloadedRecordUpdate #-}
 
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 {-# OPTIONS_GHC -Wno-unused-do-bind #-}
@@ -16,7 +17,7 @@ import RIO.FilePath ((</>))
 
 import VulkanSetup.Types
 import VulkanConfig.FIRUtils ()
-import VulkanConfig.Pipeline (numVertices)
+import VulkanConfig.Pipeline (numVertices, numVertexEntries)
 
 type UpdatePosLocalSize = 256
 
@@ -30,7 +31,8 @@ type UpdatePosDefs =
                       (Struct '["posArray" ':-> RuntimeArray Float])
                       -- really, this should be a RuntimeArray with
                       -- Struct ["pos" ':-> V 2 Float, "col" ':-> V 3 Float]
-                      -- But the alignment doesn't work out
+                      -- But the alignment doesn't work out since this is also
+                      -- the vertex buffer
    , "main"      ':-> EntryPoint   '[LocalSize UpdatePosLocalSize 1 1] Compute
    ]
 
@@ -38,10 +40,8 @@ updatePos :: Module UpdatePosDefs
 updatePos = Module $ entryPoint @"main" @Compute do
   gid <- #gl_GlobalInvocationID <<&>> \i -> i.x
   when (gid < Lit numVertices) do
-    index <- let' $ gid * 5 + 3
-    positions <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) index
-    assign @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) index $
-      positions + 0.001
+    index <- let' $ gid * Lit numVertexEntries + 2
+    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) index $ (+ 0.001)
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float

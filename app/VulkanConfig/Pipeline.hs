@@ -24,17 +24,17 @@ import Utils
 
 type SizeFloat = 4
 
-type NumVertexEntries = 5
 type NumVertices = 19
 type Size0 = 2
 type Size1 = 3
 
-numVertices, floatSize, vertexSize, offset0, offset1 :: Word32
+numVertices, numVertexEntries, floatSize, vertexSize, offset0, offset1 :: Word32
 numVertices = fromIntegral $ Sized.length VulkanConfig.Pipeline.vertexData
+numVertexEntries = integralNatVal @Size0 + integralNatVal @Size1
 floatSize = fromIntegral $ sizeOf (0 :: Float)
-vertexSize = floatSize * integralNatVal @NumVertexEntries
+vertexSize = floatSize * numVertexEntries
 offset0 = 0
-offset1 = floatSize * (integralNatVal @NumVertexEntries - integralNatVal @Size1)
+offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 
 -- 2D position, RGB color
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Sized.Vector Size1 Float)
