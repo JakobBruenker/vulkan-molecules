@@ -150,18 +150,22 @@ initPhysicalDevice = do
       do throwIO VkNoPhysicalDevices
       \(toList -> physDevs) -> do
         let lds = length physDevs
-        logDebug $ "Found " <> display lds <> plural " physical device" lds <> "."
+        logDebug . (("Found " <> display lds <> plural " physical device" lds <> ": ") <>)
+          =<< displayBytesUtf8 . B.intercalate ", " <$>
+                traverse (fmap deviceName <$> getPhysicalDeviceProperties) physDevs
 
         fmap (fst . maximumOn1 snd) $
           fromMaybeM (throwIO VkNoSuitableDevices) . fmap NE.nonEmpty $
-            mapMaybeM ?? zip [0..] physDevs $ \(index, physDev) -> runMaybeT do
+            mapMaybeM ?? physDevs $ \physDev -> runMaybeT do
               let ?physicalDevice = physDev
-              guard =<< checkDeviceExtensionSupport index
+              guard =<< checkDeviceExtensionSupport
               Dict <- querySwapchainSupport
-              Dict <- findQueueFamilies index
+              Dict <- findQueueFamilies
               (Dict,) <$> score
 
-  logDebug "Picked device."
+  case dict of
+    Dict -> logDebug . ("Picked device " <>) . (<> ".") =<<
+      displayBytesUtf8 . deviceName <$> getPhysicalDeviceProperties ?physicalDevice
   pure dict
   where
     score :: (MonadIO m, HasPhysicalDevice) => m Integer
@@ -169,14 +173,15 @@ initPhysicalDevice = do
       getPhysicalDeviceProperties ?physicalDevice
 
     findQueueFamilies :: (MonadResource m, HasLogger, HasPhysicalDevice)
-                      => Natural -> MaybeT m (Dict HasQueueFamilyIndices)
-    findQueueFamilies index = do
+                      => MaybeT m (Dict HasQueueFamilyIndices)
+    findQueueFamilies = do
+      devName <- displayBytesUtf8 . deviceName <$> getPhysicalDeviceProperties ?physicalDevice
       props <- getPhysicalDeviceQueueFamilyProperties ?physicalDevice
 
       let findByFlag flag name = do
             Just queue <- pure $ fromIntegral <$>
               V.findIndex (\p -> queueFlags p .&. flag > zero) props
-            logResult name queue
+            logResult name queue devName
             pure queue
 
       graphics <- findByFlag QUEUE_GRAPHICS_BIT "graphics"
@@ -184,7 +189,7 @@ initPhysicalDevice = do
       let indices = ZipList (toList props) *> [0..]
           surfaceSupport = getPhysicalDeviceSurfaceSupportKHR ?physicalDevice ?? ?surface
       Just present <- fmap fst . find snd <$> (traverse . traverseToSnd) surfaceSupport indices
-      logResult "present" present
+      logResult "present" present devName
 
       compute <- findByFlag QUEUE_COMPUTE_BIT "compute"
 
@@ -193,15 +198,16 @@ initPhysicalDevice = do
           ?computeQueueFamily  = compute
       pure Dict
       where
-        logResult name queueIndex = logDebug $
-          "Found " <> name <> " queue family (index " <> display queueIndex <> ") on device " <>
-          displayShow index <> "."
+        logResult name queueIndex devName = logDebug $
+          "Found " <> name <> " queue family (index " <> display queueIndex <> ") on " <>
+          devName <> "."
 
-    checkDeviceExtensionSupport :: (MonadIO m, HasPhysicalDevice) => Natural -> m Bool
-    checkDeviceExtensionSupport index = do
+    checkDeviceExtensionSupport :: (MonadIO m, HasPhysicalDevice) => m Bool
+    checkDeviceExtensionSupport = do
       exts <- fmap extensionName . snd <$> enumerateDeviceExtensionProperties ?physicalDevice Nothing
       let yes = V.all (`elem` exts) deviceExtensions
-      logDebug $ "Device " <> displayShow index <> " " <> bool "doesn't support" "supports" yes <>
+      devName <- displayBytesUtf8 . deviceName <$> getPhysicalDeviceProperties ?physicalDevice
+      logDebug $ devName <> " " <> bool "doesn't support" "supports" yes <>
                  " all extensions in " <> displayShow deviceExtensions <> "."
       pure yes
 

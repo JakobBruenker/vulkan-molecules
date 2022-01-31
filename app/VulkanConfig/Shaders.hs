@@ -7,6 +7,7 @@
 module VulkanConfig.Shaders where
 
 import GHC.Records
+import Data.Function
 
 import FIR
 import FIR.Syntax.Labels
@@ -20,7 +21,7 @@ import VulkanConfig.FIRUtils ()
 import VulkanConfig.Pipeline (numVertices, numVertexEntries)
 
 type ComputeUniformInput = Struct
-  '[ "subIndex" ':-> Word32 ]
+  '[ "sign" ':-> Word32 ]
 
 type UpdatePosLocalSize = 256
 
@@ -38,12 +39,30 @@ type UpdatePosDefs =
 updatePos :: Module UpdatePosDefs
 updatePos = Module $ entryPoint @"main" @Compute do
   gid <- #gl_GlobalInvocationID <<&>> \i -> i.x
-  when (gid < Lit numVertices) do
+  when (gid < Lit numVertices) $ locally do
     ubo <- #ubo
-    (sign, subIndex) <- let' if ubo.subIndex >= 5 then (-1, ubo.subIndex - 5) else (1, ubo.subIndex)
-    index <- let' $ gid * Lit numVertexEntries + subIndex
-    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) index \prev ->
-      min (max (prev + (sign * 0.001)) if subIndex < 3 then -1 else 0) 1
+    sign :: Code Float <- let' $ if ubo.sign == 0 then -1 else 1
+
+    realGid <- let' $ Lit numVertexEntries * gid
+    selfX <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) realGid
+    selfY <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + 1)
+
+
+    -- subtract own position to find center of others
+    #sum @(V 2 Float) #= Vec2 (-selfX) (-selfY)
+    #index #= 0
+    while (#index <<&>> (< Lit numVertices)) do
+      #index %= (+ 1)
+      realIndex <- (Lit numVertexEntries *) <<$>> #index
+      x <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) realIndex
+      y <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realIndex + 1)
+      #sum %= (^+^ Vec2 x y)
+
+    center <- #sum <<&>> (^/ Lit (fromIntegral numVertices))
+    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) realGid \x ->
+      x - 0.001 * (x - center.x) * sign
+    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + 1) \y ->
+      y - 0.001 * (y - center.y) * sign
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -67,18 +86,16 @@ type VertexDefs =
 vertex :: ShaderModule "main" VertexShader VertexDefs _
 vertex = shader do
   ubo <- #ubo
-  floatWidth <- let' $ fromIntegral ubo.windowWidth
+  floatWidth  <- let' $ fromIntegral ubo.windowWidth
   floatHeight <- let' $ fromIntegral ubo.windowHeight
 
-  phi <- let' $ ubo.time / 100
   position <- #position
-  scl <- let' if floatHeight < floatWidth
-              then Mat22 (floatHeight / floatWidth) 0 0 1
-              else Mat22 1 0 0 (floatWidth / floatHeight)
-  rot <- let' $ Mat22 (cos phi) (sin phi) (-(sin phi)) (cos phi)
-  #gl_Position .= (scl !*! rot) !*^ position <!> Vec2 0 1
+  scl :: Code (M 2 2 Float) <- let' if floatHeight < floatWidth
+                                    then Mat22 (floatHeight / floatWidth) 0 0 1
+                                    else Mat22 1 0 0 (floatWidth / floatHeight)
+  #gl_Position .= scl !*^ position <!> Vec2 0 1
   color <- #color
-  #vertColor .= Vec4 color.r color.g color.b 0.7
+  #vertColor .= Vec4 color.r color.g color.b 0.3
   #gl_PointSize .= 40
 
 type FragmentDefs =
