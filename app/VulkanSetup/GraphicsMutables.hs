@@ -11,8 +11,6 @@ import Data.Bits ((.|.))
 import Data.Foldable (find)
 import Data.List (nub)
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, ResIO)
-import Data.Vector.Storable.Sized qualified as Sized
-import Data.Tuple.Extra (dupe)
 import Foreign.Storable.Tuple ()
 import Control.Monad.Loops (whileM_)
 
@@ -329,19 +327,6 @@ constructFramebuffer Extent2D{width, height} renderPass imageView = do
                    , layers = 1
                    }
   withFramebuffer ?device fbInfo{attachments = [imageView]} Nothing allocate
-
-initSyncs :: (HasLogger, HasDevice) => ResIO (Dict HasSyncs)
-initSyncs = do
-  (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
-    snd <$> withSemaphore ?device zero Nothing allocate
-  inFlight <- Sized.replicateM $
-    snd <$> withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate
-  let ?imageAvailable = imageAvailable
-      ?renderFinished = renderFinished
-      ?inFlight       = inFlight
-
-  logDebug "Created syncs."
-  pure Dict
 
 recreateSwapchain :: (HasLogger, HasVulkanResources)
                   => (HasVulkanResources => ResIO ()) -> ResIO ()

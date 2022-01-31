@@ -49,7 +49,7 @@ updatePos = Module $ entryPoint @"main" @Compute do
 
 
     -- subtract own position to find center of others
-    #sum @(V 2 Float) #= Vec2 (-selfX) (-selfY)
+    #sum @(V 2 Float) #= Vec2 -selfX -selfY
     #index #= 0
     while (#index <<&>> (< Lit numVertices)) do
       #index %= (+ 1)
@@ -60,9 +60,9 @@ updatePos = Module $ entryPoint @"main" @Compute do
 
     center <- #sum <<&>> (^/ Lit (fromIntegral numVertices))
     modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) realGid \x ->
-      x - 0.001 * (x - center.x) * sign
+      x - 0.00001 * (x - center.x) * sign
     modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + 1) \y ->
-      y - 0.001 * (y - center.y) * sign
+      y - 0.00001 * (y - center.y) * sign
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -95,7 +95,7 @@ vertex = shader do
                                     else Mat22 1 0 0 (floatWidth / floatHeight)
   #gl_Position .= scl !*^ position <!> Vec2 0 1
   color <- #color
-  #vertColor .= Vec4 color.r color.g color.b 0.3
+  #vertColor .= Vec4 (color.r * ubo.time * 0.01) color.g color.b 0.3
   #gl_PointSize .= 40
 
 type FragmentDefs =

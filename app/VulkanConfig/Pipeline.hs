@@ -73,7 +73,7 @@ type instance UboInput Compute = ()
 
 computeUboData :: MonadIO m => m (UboData Compute)
 computeUboData = MkUboData proxy# (\_ i -> (i + 1) `mod` 2) <$>
-  newIORef @_ @ComputeUboContents 0
+  newIORef @_ @ComputeUboContents 1
 
 setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupComputeCommands = do

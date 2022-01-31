@@ -124,8 +124,7 @@ constructComputePipeline layout = do
   logDebug "Created compute pipeline."
   pure graphicsPipeline
 
-recreateComputePipeline :: (HasLogger, HasVulkanResources, HasComputeResources,
-                            HasComputeStorageBuffer)
+recreateComputePipeline :: (HasLogger, HasVulkanResources, HasComputeStorageBuffer)
                         => (HasVulkanResources => ResIO ()) -> ResIO ()
 recreateComputePipeline setupCommands = do
   logDebug "Recreating compute pipeline..."

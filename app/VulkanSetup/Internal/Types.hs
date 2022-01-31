@@ -187,8 +187,10 @@ type HasGraphicsResources = ( HasGLFW
 
 type HasComputeCommandPool          = ?computeCommandPool          :: CommandPool
 type HasComputeDescriptorSetLayouts = ?computeDescriptorSetLayouts :: Vector DescriptorSetLayout
+type HasComputeFences               = ?computeFences               :: (Fence, Fence)
 type HasComputeResources = ( HasComputeCommandPool
                            , HasComputeDescriptorSetLayouts
+                           , HasComputeFences
                            , HasInstance
                            , HasDevice
                            )
@@ -261,6 +263,7 @@ type HasVulkanResources = ( HasVertexBuffer
                           , HasComputeUniformBuffer
                           , HasGraphicsResources
                           , HasGraphicsMutables
+                          , HasComputeResources
                           , HasComputeMutables
                           , HasShaderPaths
                           , HasVulkanConfig

@@ -36,6 +36,7 @@ executable boxticle
                       VulkanConfig.FIRUtils
                       Utils
                       Options
+                      Types
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -67,6 +68,7 @@ executable boxticle
                         -Wredundant-constraints
                         -Wno-ambiguous-fields
                         -- ^ until OverloadedRecordUpdate is ready
+                        -threaded
     default-extensions: BlockArguments,
                         DataKinds,
                         DefaultSignatures,

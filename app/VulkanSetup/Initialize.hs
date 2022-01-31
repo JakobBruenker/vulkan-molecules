@@ -12,6 +12,7 @@ import RIO.Vector.Storable.Unsafe qualified as VS
 import Control.Lens ((??), ix)
 import Control.Monad.Extra (fromMaybeM, ifM, maybeM)
 import Data.Bits (Bits((.&.)), testBit, (.|.), xor)
+import Data.Semigroup (Arg(..), Max (..), Semigroup (sconcat))
 import System.Environment (getProgName)
 import Control.Applicative (ZipList(..))
 import Control.Monad.Trans.Maybe (runMaybeT, MaybeT)
@@ -21,9 +22,9 @@ import Data.Foldable (find)
 import Data.List (nub)
 import Foreign (malloc, nullPtr, Storable (peek, sizeOf), copyBytes, castPtr)
 import Foreign.Storable.Tuple ()
-import Data.List.NonEmpty.Extra (maximumOn1)
 import Control.Lens.Combinators (ifind)
-import qualified Data.Vector.Storable.Sized as Sized
+import Data.Vector.Storable.Sized qualified as Sized
+import Data.Tuple.Extra (dupe, both)
 
 import Graphics.UI.GLFW qualified as GLFW
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -154,14 +155,14 @@ initPhysicalDevice = do
           =<< displayBytesUtf8 . B.intercalate ", " <$>
                 traverse (fmap deviceName <$> getPhysicalDeviceProperties) physDevs
 
-        fmap (fst . maximumOn1 snd) $
+        fmap ((\(Arg _ x) -> x) . getMax . sconcat) .
           fromMaybeM (throwIO VkNoSuitableDevices) . fmap NE.nonEmpty $
             mapMaybeM ?? physDevs $ \physDev -> runMaybeT do
               let ?physicalDevice = physDev
               guard =<< checkDeviceExtensionSupport
               Dict <- querySwapchainSupport
               Dict <- findQueueFamilies
-              (Dict,) <$> score
+              Max . flip Arg Dict <$> score
 
   case dict of
     Dict -> logDebug . ("Picked device " <>) . (<> ".") =<<
@@ -227,7 +228,7 @@ initDevice :: (HasLogger, HasPhysicalDeviceRelated, HasValidationLayers)
 initDevice = do
   let queueCreateInfos =
         V.fromList (nub [?graphicsQueueFamily, ?presentQueueFamily, ?computeQueueFamily]) <&>
-          \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1]}
+          \index -> SomeStruct zero{queueFamilyIndex = index, queuePriorities = [1, 0.5]}
       deviceCreateInfo = zero{ queueCreateInfos
                              , enabledLayerNames = ?validationLayers
                              , enabledExtensionNames = deviceExtensions
@@ -240,10 +241,12 @@ initDevice = do
 
 initQueues :: (HasLogger, HasDevice, HasQueueFamilyIndices) => ResIO (Dict HasQueues)
 initQueues = do
-  let getQueue = getDeviceQueue ?device ?? 0
-  graphicsQueue <- getQueue ?graphicsQueueFamily
-  presentQueue  <- getQueue ?presentQueueFamily
-  computeQueue  <- getQueue ?computeQueueFamily
+  let getQueue = getDeviceQueue ?device
+  graphicsQueue <- getQueue ?graphicsQueueFamily 0
+  presentQueue  <- getQueue ?presentQueueFamily  0
+  -- Is it better to use a compute queue that's different from the graphics
+  -- queue? Not sure. Doing it for now though.
+  computeQueue  <- getQueue ?computeQueueFamily  1
   let ?graphicsQueue = graphicsQueue
       ?presentQueue  = presentQueue
       ?computeQueue  = computeQueue
@@ -398,6 +401,32 @@ initComputeDescriptorSetLayout = do
   let ?computeDescriptorSetLayouts = layouts
   pure Dict
 
+initComputeStorageBuffer :: HasVertexBuffer => ResIO (Dict HasComputeStorageBuffer)
+initComputeStorageBuffer = do
+  let ?computeStorageBuffer = ?vertexBuffer
+  pure Dict
+
+initComputeFences :: HasDevice => ResIO (Dict HasComputeFences)
+initComputeFences = do
+  fences <- both snd <$> bisequence
+    (dupe $ withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate)
+
+  let ?computeFences = fences
+  pure Dict
+
+initSyncs :: (HasLogger, HasDevice) => ResIO (Dict HasSyncs)
+initSyncs = do
+  (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
+    snd <$> withSemaphore ?device zero Nothing allocate
+  inFlight <- Sized.replicateM $
+    snd <$> withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate
+  let ?imageAvailable = imageAvailable
+      ?renderFinished = renderFinished
+      ?inFlight       = inFlight
+
+  logDebug "Created syncs."
+  pure Dict
+
 initializeVulkan :: (HasLogger, HasConfig, HasShaderPaths, HasVulkanConfig)
                  => (HasVulkanResources => ResIO ()) -> (HasVulkanResources => ResIO ())
                  -> ResIO (Dict HasVulkanResources)
@@ -417,7 +446,8 @@ initializeVulkan setupGraphicsCommands setupComputeCommands = do
   Dict <- initGraphicsMutables
   Dict <- initComputeUniformBuffer
   Dict <- initComputeDescriptorSetLayout
-  let ?computeStorageBuffer = ?vertexBuffer
+  Dict <- initComputeStorageBuffer
+  Dict <- initComputeFences
   Dict <- initComputeMutables
   Dict <- initSyncs
 

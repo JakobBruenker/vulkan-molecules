@@ -2,16 +2,18 @@
 
 module Main (main) where
 
-import RIO hiding (logDebug, logInfo, logWarn, logError)
+import RIO hiding (logDebug, logInfo, logWarn, logError, threadDelay)
 
 import Options.Applicative
 import Control.Monad.Trans.Resource (runResourceT, ResIO)
 import Data.Finite (Finite, natToFinite)
+import Data.Tuple (swap)
 import qualified Data.Vector.Storable.Sized as Sized
 import Control.Monad.Extra (fromMaybeM, whenJust)
 import Control.Lens (ix, (??), both)
-import Data.Tuple.Extra (dupe)
 import Foreign (castPtr, with, copyBytes)
+import Control.Concurrent (forkIO)
+import Control.Monad (replicateM)
 
 import qualified Graphics.UI.GLFW as GLFW
 
@@ -33,6 +35,7 @@ import VulkanSetup.GraphicsMutables
 import VulkanSetup.Types
 import Options
 import Utils
+import Types
 
 main :: IO ()
 main = do
@@ -54,53 +57,85 @@ runApp = runResourceT do
   Dict <- vulkanConfig
   Dict <- initializeVulkan setupGraphicsCommands setupComputeCommands
 
-  liftIO $ GLFW.setMouseButtonCallback ?window $ Just
-    \_ _ state _ -> if | state == GLFW.MouseButtonState'Pressed -> updateComputeUniformBuffer
-                       | otherwise                              -> pure ()
+  liftIO $ GLFW.setMouseButtonCallback ?window $ Just mouseButtonCallback
+
+  killCompute <- newEmptyMVar
+  pauseCompute <- newEmptyMVar
+
+  let ?killCompute = killCompute
+      ?pauseCompute = pauseCompute
+
+  for_ @[] [0..integralNatVal @MaxFramesInFlight - 1] copyGraphicsUniformBuffer
+  copyComputeUniformBuffer
 
   mainLoop
 
   logInfo "Goodbye!"
 
+mouseButtonCallback :: HasVulkanResources => GLFW.MouseButtonCallback
+mouseButtonCallback _ _ state _ | state == GLFW.MouseButtonState'Pressed = updateComputeUniformBuffer
+                                | otherwise                              = pure ()
+
 data ShouldRecreateSwapchain = Don'tRecreate
                              | PleaseRecreate
                              deriving Eq
 
-mainLoop :: (HasLogger, HasVulkanResources) => ResIO ()
+mainLoop :: (HasLogger, HasVulkanResources, HasKillCompute) => ResIO ()
 mainLoop = do
   logDebug "Starting main loop."
-  fix ?? natToFinite (Proxy @0) $ \loop currentFrame -> do
-    -- NB: depending on present mode and possibly other factors, the exception
-    -- is thrown either by 'acquireNextImageKHR' or by 'queuePresentKHR'
-    shouldRecreate <- drawFrame currentFrame `catch` \case
-      VulkanException ERROR_OUT_OF_DATE_KHR -> pure PleaseRecreate
-      ex -> throwIO ex
-    resized <- readIORef ?framebufferResized
-    when (resized || shouldRecreate == PleaseRecreate) $ recreateSwapchain setupGraphicsCommands
-    -- TODO I don't think this is actually a reliable way to set the framerate
-    liftIO $ GLFW.waitEventsTimeout 0.004
 
-    unlessM ?? loop (currentFrame + 1) $ liftIO $ GLFW.windowShouldClose ?window
+  -- putting the MVar twice at the end, once to signal that the thread should
+  -- be killed, and once to wait for the thread to be done.
+  bracket_ (liftIO $ forkIO enqueueCompute) (replicateM 2 $ putMVar ?killCompute ()) do
+    fix ?? natToFinite (Proxy @0) $ \loop currentFrame -> do
+      -- NB: depending on present mode and possibly other factors, the exception
+      -- is thrown either by 'acquireNextImageKHR' or by 'queuePresentKHR'
+      shouldRecreate <- drawFrame currentFrame `catch` \case
+        VulkanException ERROR_OUT_OF_DATE_KHR -> pure PleaseRecreate
+        ex -> throwIO ex
+      resized <- readIORef ?framebufferResized
+      when (resized || shouldRecreate == PleaseRecreate) $ recreateSwapchain setupGraphicsCommands
+      -- TODO I don't think this is actually a reliable way to set the framerate
+      liftIO $ GLFW.waitEventsTimeout (1 / 60)
+
+      unlessM ?? loop (currentFrame + 1) $ liftIO $ GLFW.windowShouldClose ?window
 
   -- Allow queues/buffers to finish their job
   deviceWaitIdle ?device
 
+-- TODO benchmark to see if changing this makes any difference
+enqueuesPerStep :: Natural
+enqueuesPerStep = 10
+
+-- This first enqueues a bunch A of commands, then immediately enqueues a bunch
+-- B, then waits until A is done before enqueuing A again, etc.
+-- This lets us ensure that there are always some commands in the queue.
+-- I'm not sure if that's actually necessary, compared to just using a single fence,
+-- but it seems reasonable.
+enqueueCompute :: (HasDevice, HasComputeMutables, HasComputeFences, HasComputeQueue, HasKillCompute)
+               => IO ()
+enqueueCompute = do
+  computeMutables <- readRes ?computeMutables
+  let submitInfo = pure . SomeStruct $
+        zero{commandBuffers = [computeMutables.commandBuffer.commandBufferHandle]}
+  go submitInfo ?computeFences
+
+  where
+    go submitInfo fences@(fence, _) = do
+      _result <- waitForFencesSafe ?device [fence] False maxBound
+      resetFences ?device [fence]
+      replicateM_ (fromIntegral enqueuesPerStep - 1) $ queueSubmit ?computeQueue submitInfo NULL_HANDLE
+      queueSubmit ?computeQueue submitInfo fence
+      unlessM (isJust <$> tryTakeMVar ?killCompute) $ go submitInfo (swap fences)
+
 drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecreateSwapchain
 drawFrame currentFrame = do
-  -- compute stuff
-  computeMutables <- readRes ?computeMutables
-  let computeSubmitInfo = pure . SomeStruct $
-        zero{commandBuffers = [computeMutables.commandBuffer.commandBufferHandle]}
-  queueSubmit ?computeQueue computeSubmitInfo NULL_HANDLE
-
-
-  -- graphics stuff
   mutables <- readRes ?graphicsMutables
 
   let ixSync :: Storable a => Sized.Vector MaxFramesInFlight a -> a
       ixSync = view $ Sized.ix currentFrame
 
-  _result <- waitForFences ?device [ixSync ?inFlight] True maxBound
+  _result <- waitForFencesSafe ?device [ixSync ?inFlight] True maxBound
 
   (imageResult, imageIndex) <-
     acquireNextImageKHR ?device mutables.swapchain maxBound (ixSync ?imageAvailable) NULL_HANDLE
@@ -145,11 +180,19 @@ updateGraphicsUniformBuffer :: (MonadUnliftIO m, HasDevice, HasGraphicsUboData,
                             => Word32 -> Int32 -> Int32 -> m ()
 updateGraphicsUniformBuffer currentImageIndex windowWidth windowHeight = do
   MkUboData{update, ref} <- pure ?graphicsUboData
-  time <- atomicModifyIORef' ref (dupe . update (windowWidth, windowHeight))
+  modifyIORef' ref $ update (windowWidth, windowHeight)
+  copyGraphicsUniformBuffer currentImageIndex
+
+copyGraphicsUniformBuffer :: (MonadUnliftIO m, HasDevice, HasGraphicsUboData,
+                                HasGraphicsUniformBuffers, HasGraphicsUniformBufferSize)
+                            => Word32 -> m ()
+copyGraphicsUniformBuffer imageIndex = do
+  MkUboData{ref} <- pure ?graphicsUboData
+  time <- readIORef ref
   memory <- maybe
     do throwIO VkUniformBufferIndexOutOfRange
     do pure . snd
-    do ?graphicsUniformBuffers ^? ix (fromIntegral currentImageIndex)
+    do ?graphicsUniformBuffers ^? ix (fromIntegral imageIndex)
   withMappedMemory ?device memory 0 ?graphicsUniformBufferSize zero bracket \target ->
     liftIO $ with time \(castPtr -> source) ->
       copyBytes target source $ fromIntegral ?graphicsUniformBufferSize
@@ -159,7 +202,15 @@ updateComputeUniformBuffer :: (MonadUnliftIO m, HasDevice,
                            => m ()
 updateComputeUniformBuffer = do
   MkUboData{update, ref} <- pure ?computeUboData
-  subIndex <- atomicModifyIORef' ref (dupe . update ())
+  modifyIORef' ref $ update ()
+  copyComputeUniformBuffer
+
+copyComputeUniformBuffer :: (MonadUnliftIO m, HasDevice,
+                             HasComputeUboData, HasComputeUniformBuffer, HasComputeUniformBufferSize)
+                         => m ()
+copyComputeUniformBuffer = do
+  MkUboData{ref} <- pure ?computeUboData
+  subIndex <- readIORef ref
   withMappedMemory
     ?device (snd ?computeUniformBuffer) 0 ?computeUniformBufferSize zero bracket \target ->
       liftIO $ with subIndex \(castPtr -> source) ->
