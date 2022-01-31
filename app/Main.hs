@@ -54,6 +54,10 @@ runApp = runResourceT do
   Dict <- vulkanConfig
   Dict <- initializeVulkan setupGraphicsCommands setupComputeCommands
 
+  liftIO $ GLFW.setMouseButtonCallback ?window $ Just
+    \_ _ state _ -> if | state == GLFW.MouseButtonState'Pressed -> updateComputeUniformBuffer
+                       | otherwise                              -> pure ()
+
   mainLoop
 
   logInfo "Goodbye!"
@@ -149,3 +153,14 @@ updateGraphicsUniformBuffer currentImageIndex windowWidth windowHeight = do
   withMappedMemory ?device memory 0 ?graphicsUniformBufferSize zero bracket \target ->
     liftIO $ with time \(castPtr -> source) ->
       copyBytes target source $ fromIntegral ?graphicsUniformBufferSize
+
+updateComputeUniformBuffer :: (MonadUnliftIO m, HasDevice,
+                               HasComputeUboData, HasComputeUniformBuffer, HasComputeUniformBufferSize)
+                           => m ()
+updateComputeUniformBuffer = do
+  MkUboData{update, ref} <- pure ?computeUboData
+  subIndex <- atomicModifyIORef' ref (dupe . update ())
+  withMappedMemory
+    ?device (snd ?computeUniformBuffer) 0 ?computeUniformBufferSize zero bracket \target ->
+      liftIO $ with subIndex \(castPtr -> source) ->
+        copyBytes target source $ fromIntegral ?computeUniformBufferSize

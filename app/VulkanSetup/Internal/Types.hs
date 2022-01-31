@@ -68,6 +68,7 @@ instance Display AppException where
     VkUniformBufferIndexOutOfRange -> "Program requested a uniform buffer with" <>
       " a higher index than was allocated."
     VkNoSuitableMemoryType -> "Coludn't find a suitable memory type for Vulkan buffer creation."
+
 -- abstract type to keep track of whether GLFW is initialized
 data GLFWToken = UnsafeMkGLFWToken
 

@@ -75,11 +75,12 @@ graphicsUboData :: MonadIO m => m (UboData Graphics)
 graphicsUboData = MkUboData proxy# (\(w, h) (i, _, _) -> (i + 1, w, h)) <$>
   newIORef @_ @GraphicsUboContents (0, 0, 0)
 
-type ComputeUboContents = ("tbd" ::: Float)
-type instance UboInput Compute = ("tbd" ::: Float)
+type ComputeUboContents = ("index" ::: Word32)
+type instance UboInput Compute = ()
 
 computeUboData :: MonadIO m => m (UboData Compute)
-computeUboData = MkUboData proxy# const <$> newIORef @_ @ComputeUboContents 1
+computeUboData = MkUboData proxy# (\_ i -> (i + 1) `mod` (2 * numVertexEntries)) <$>
+  newIORef @_ @ComputeUboContents 1
 
 setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupComputeCommands = do

@@ -19,14 +19,13 @@ import VulkanSetup.Types
 import VulkanConfig.FIRUtils ()
 import VulkanConfig.Pipeline (numVertices, numVertexEntries)
 
+type ComputeUniformInput = Struct
+  '[ "subIndex" ':-> Word32 ]
+
 type UpdatePosLocalSize = 256
 
 type UpdatePosDefs =
-  -- TODO
-  -- this produces a validation error. fixed by adding %positions at the end of the OpEntryPoint line.
-  -- might have to add NonWritable or NonReadable though, and split the buffer in two, idk
-  -- EDIT: this is probably wrong, delete it if so, nothing to worry about I think
-  '[ "ubo"       ':-> Uniform      '[DescriptorSet 0, Binding 0      ] UniformInput
+  '[ "ubo"       ':-> Uniform      '[DescriptorSet 0, Binding 0      ] ComputeUniformInput
    , "positions" ':-> StorageBuffer [DescriptorSet 1, Binding 0      ]
                       (Struct '["posArray" ':-> RuntimeArray Float])
                       -- really, this should be a RuntimeArray with
@@ -40,15 +39,18 @@ updatePos :: Module UpdatePosDefs
 updatePos = Module $ entryPoint @"main" @Compute do
   gid <- #gl_GlobalInvocationID <<&>> \i -> i.x
   when (gid < Lit numVertices) do
-    index <- let' $ gid * Lit numVertexEntries + 2
-    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) index $ (+ 0.001)
+    ubo <- #ubo
+    (sign, subIndex) <- let' if ubo.subIndex >= 5 then (-1, ubo.subIndex - 5) else (1, ubo.subIndex)
+    index <- let' $ gid * Lit numVertexEntries + subIndex
+    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) index \prev ->
+      min (max (prev + (sign * 0.001)) if subIndex < 3 then -1 else 0) 1
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
    , Slot 1 0 ':-> V 3 Float
    ]
 
-type UniformInput = Struct
+type GraphicsUniformInput = Struct
   '[ "time"         ':-> Float
    , "windowWidth"  ':-> Int32
    , "windowHeight" ':-> Int32
@@ -58,7 +60,7 @@ type VertexDefs =
   '[ "position"  ':-> Input      '[Location 0                ] (V 2 Float)
    , "color"     ':-> Input      '[Location 1                ] (V 3 Float)
    , "vertColor" ':-> Output     '[Location 0                ] (V 4 Float)
-   , "ubo"       ':-> Uniform    '[DescriptorSet 0, Binding 0] UniformInput
+   , "ubo"       ':-> Uniform    '[DescriptorSet 0, Binding 0] GraphicsUniformInput
    , "main"      ':-> EntryPoint '[                          ] Vertex
    ]
 
@@ -116,8 +118,6 @@ compileAllShaders :: IO ()
 compileAllShaders = sequence_
   [ compileTo vertexShaderPath spirv vertex
   , compileTo fragmentShaderPath spirv fragment
-  -- for some reason this shader isn't being compiled right now.
-  -- replacing updatePos with fragment makes it compile, but it used to compile as is...
   , compileTo updatePosPath spirv updatePos
   ]
   where spirv = [SPIRV $ Version 1 3]
