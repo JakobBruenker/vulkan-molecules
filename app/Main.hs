@@ -8,7 +8,7 @@ import Options.Applicative ((<**>), fullDesc, info, execParser, helper)
 import Control.Monad.Trans.Resource (runResourceT, ResIO)
 import Data.Finite (Finite, natToFinite)
 import Data.Tuple (swap)
-import qualified Data.Vector.Storable.Sized as SizedS
+import qualified Data.Vector.Storable.Sized as Sized
 import Control.Monad.Extra (fromMaybeM, whenJust)
 import Control.Lens (ix, (??), both)
 import Foreign (castPtr, with, copyBytes)
@@ -142,8 +142,8 @@ drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecre
 drawFrame currentFrame = do
   mutables <- readRes ?graphicsMutables
 
-  let ixSync :: Storable a => SizedS.Vector MaxFramesInFlight a -> a
-      ixSync = view $ SizedS.ix currentFrame
+  let ixSync :: Storable a => Sized.Vector MaxFramesInFlight a -> a
+      ixSync = view $ Sized.ix currentFrame
 
   _result <- waitForFencesSafe ?device [ixSync ?inFlight] True maxBound
 

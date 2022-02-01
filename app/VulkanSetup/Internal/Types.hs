@@ -8,8 +8,8 @@ import RIO
 import RIO.ByteString qualified as B
 import RIO.Text qualified as T
 
-import Data.Vector.Storable.Sized qualified as SizedS
-import Data.Vector.Sized qualified as Sized
+import Data.Vector.Storable.Sized qualified as Sized
+import Data.Vector.Sized qualified as Sized'
 import Graphics.UI.GLFW qualified as GLFW
 import Control.Monad.Trans.Resource (ReleaseKey, release)
 
@@ -128,11 +128,11 @@ data GraphicsMutables = MkGraphicsMutables { imageRelateds   :: Vector ImageRela
                                            , pipeline        :: Pipeline
                                            }
 
-data ComputeMutables = MkComputeMutables
-  { pipelines      :: Sized.Vector ComputeShaderCount (PipelineLayout, Pipeline)
-  , descriptorSets :: Vector DescriptorSet
-  , commandBuffer  :: CommandBuffer
-  }
+data ComputeMutables = MkComputeMutables { pipelineLayout :: PipelineLayout
+                                         , pipelines      :: Sized.Vector ComputeShaderCount Pipeline
+                                         , descriptorSets :: Vector DescriptorSet
+                                         , commandBuffer  :: CommandBuffer
+                                         }
 
 type HasLogger = ?logFunc :: LogFunc
 
@@ -211,7 +211,7 @@ type HasComputeResources = ( HasComputeCommandPool
                            , HasDevice
                            )
 
-type SyncVector = SizedS.Vector MaxFramesInFlight
+type SyncVector = Sized.Vector MaxFramesInFlight
 
 type HasImageAvailable = ?imageAvailable :: SyncVector Semaphore
 type HasRenderFinished = ?renderFinished :: SyncVector Semaphore
@@ -228,7 +228,7 @@ type family ComputeShaderCount :: Natural
 
 type HasVertexShaderPath   = ?vertexShaderPath   :: FilePath
 type HasFragmentShaderPath = ?fragmentShaderPath :: FilePath
-type HasComputeShaderPaths = ?computeShaderPaths :: Sized.Vector ComputeShaderCount FilePath
+type HasComputeShaderPaths = ?computeShaderPaths :: Sized'.Vector ComputeShaderCount FilePath
 type HasShaderPaths = ( HasVertexShaderPath
                       , HasFragmentShaderPath
                       , HasComputeShaderPaths
@@ -238,15 +238,14 @@ type UboInput :: UboUsage -> Type
 type family UboInput usage
 data UboUsage = Graphics | Compute
 
-data VertexData = forall a n . (KnownNat n, Storable a) => MkVertexData (SizedS.Vector n a)
+data VertexData = forall a n . (KnownNat n, Storable a) => MkVertexData (Sized.Vector n a)
 data UboData usage = forall a . Storable a => MkUboData { proxy  :: Proxy# a
                                                         , update :: UboInput usage -> a -> a
                                                         , ref    :: IORef a
                                                         }
 
 type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
-type HasComputePipelineLayoutInfos =
-  ?computePipelineLayoutInfos :: Sized.Vector ComputeShaderCount PipelineLayoutCreateInfo
+type HasComputePipelineLayoutInfo  = ?computePipelineLayoutInfo  :: PipelineLayoutCreateInfo
 type HasGraphicsDescriptorSetLayoutInfo =
   ?graphicsDescriptorSetLayoutInfo :: DescriptorSetLayoutCreateInfo '[]
 type HasComputeDescriptorSetLayoutInfo =
@@ -260,7 +259,7 @@ type HasGraphicsUboData = ?graphicsUboData :: UboData Graphics
 type HasComputeUboData = ?computeUboData :: UboData Compute
 type HasDesiredSwapchainImageNum = ?desiredSwapchainImageNum :: Natural
 type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
-                       , HasComputePipelineLayoutInfos
+                       , HasComputePipelineLayoutInfo
                        , HasGraphicsDescriptorSetLayoutInfo
                        , HasComputeDescriptorSetLayoutInfo
                        , HasVertexInputInfo

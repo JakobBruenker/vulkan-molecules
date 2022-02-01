@@ -2,11 +2,8 @@ module VulkanSetup.Utils where
 
 import RIO
 import Data.Tuple (swap)
-import RIO.Partial (fromJust)
 
 import VulkanSetup.Types
-import Data.Vector.Sized qualified as Sized
-import GHC.TypeNats (KnownNat)
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , IOSSurfaceCreateInfoMVK(view)
@@ -37,11 +34,8 @@ withShader path action = do
   bytes <- readFileBinary path
   withShaderModule ?device zero{code = bytes} Nothing bracket action
 
--- TODO: make this typesafe
-withShaders :: (MonadUnliftIO m, HasDevice, KnownNat n)
-            => Sized.Vector n FilePath
-            -> (Sized.Vector n ShaderModule -> m r) -> m r
-withShaders = go [] . toList
+withShaders :: (MonadUnliftIO m, HasDevice) => [FilePath] -> ([ShaderModule] -> m r) -> m r
+withShaders = go []
   where
-    go acc [] action = action . fromJust . Sized.fromList $ reverse acc
+    go acc [] action = action $ reverse acc
     go acc (path:paths) action = withShader path \shader -> go (shader:acc) paths action
