@@ -1,6 +1,7 @@
 {-# OPTIONS_HADDOCK not-home #-}
 
 {-# LANGUAGE MagicHash #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module VulkanSetup.Internal.Types where
 
@@ -225,6 +226,7 @@ type HasGraphicsMutables = ?graphicsMutables :: MResources GraphicsMutables
 type HasComputeMutables  = ?computeMutables  :: MResources ComputeMutables
 
 type family ComputeShaderCount :: Natural
+type family ComputeStorageBufferCount :: Natural
 
 type HasVertexShaderPath   = ?vertexShaderPath   :: FilePath
 type HasFragmentShaderPath = ?fragmentShaderPath :: FilePath
@@ -243,6 +245,7 @@ data UboData usage = forall a . Storable a => MkUboData { proxy  :: Proxy# a
                                                         , update :: UboInput usage -> a -> a
                                                         , ref    :: IORef a
                                                         }
+data StorageData = forall a n . (KnownNat n, Storable a) => MkStorageData (Sized.Vector n a)
 
 type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
 type HasComputePipelineLayoutInfo  = ?computePipelineLayoutInfo  :: PipelineLayoutCreateInfo
@@ -257,6 +260,7 @@ type HasGraphicsUniformBufferSize = ?graphicsUniformBufferSize :: DeviceSize
 type HasComputeUniformBufferSize = ?computeUniformBufferSize :: DeviceSize
 type HasGraphicsUboData = ?graphicsUboData :: UboData Graphics
 type HasComputeUboData = ?computeUboData :: UboData Compute
+type HasComputeStorageData = ?computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
 type HasDesiredSwapchainImageNum = ?desiredSwapchainImageNum :: Natural
 type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
                        , HasComputePipelineLayoutInfo
@@ -269,16 +273,20 @@ type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
                        , HasComputeUniformBufferSize
                        , HasGraphicsUboData
                        , HasComputeUboData
+                       , HasComputeStorageData
                        , HasDesiredSwapchainImageNum
                        )
 
 type HasVertexBuffer           = ?vertexBuffer           :: Buffer
+type HasVertexStorageBuffer    = ?vertexStorageBuffer    :: Buffer
 type HasGraphicsUniformBuffers = ?graphicsUniformBuffers :: SVector (Buffer, DeviceMemory)
 type HasComputeUniformBuffer   = ?computeUniformBuffer   :: (Buffer, DeviceMemory)
-type HasComputeStorageBuffer   = ?computeStorageBuffer   :: Buffer
+type HasComputeStorageBuffers  =
+  ?computeStorageBuffers :: Sized'.Vector ComputeStorageBufferCount Buffer
 type HasVulkanResources = ( HasVertexBuffer
                           , HasGraphicsUniformBuffers
                           , HasComputeUniformBuffer
+                          , HasComputeStorageBuffers
                           , HasGraphicsResources
                           , HasGraphicsMutables
                           , HasComputeResources

@@ -3,13 +3,16 @@
 module VulkanSetup.ComputeMutables where
 
 import RIO hiding (logDebug, logInfo, logWarn, logError)
-import qualified RIO.Vector as V
-import qualified RIO.Vector.Partial as V -- TODO get rid of this import
+import RIO.Vector qualified as V
+import RIO.Vector.Partial qualified as V -- TODO get rid of this import
 
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, ResIO)
-import qualified Data.Vector.Storable.Sized as Sized
+import Data.Vector.Storable.Sized qualified as Sized
+import Data.Vector.Sized qualified as Sized'
 import GHC.TypeNats (KnownNat)
 import Foreign.Storable.Tuple ()
+import Data.Finite (finites)
+import Foreign (sizeOf)
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , IOSSurfaceCreateInfoMVK(view)
@@ -26,8 +29,8 @@ import VulkanSetup.Utils
 
 initComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
                        HasDevice, HasComputeDescriptorSetLayouts, HasComputeUniformBuffer,
-                       HasComputeStorageBuffer, HasComputeCommandPool,
-                       KnownNat ComputeShaderCount)
+                       HasVertexStorageBuffer, HasComputeCommandPool, HasComputeStorageBuffers,
+                       KnownNat ComputeShaderCount, KnownNat ComputeStorageBufferCount)
                      => ResIO (Dict HasComputeMutables)
 initComputeMutables = do
   computeMutables <- mkMResources =<< constructComputeMutables
@@ -36,8 +39,8 @@ initComputeMutables = do
 
 constructComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
                              HasDevice, HasComputeDescriptorSetLayouts, HasComputeUniformBuffer,
-                             HasComputeStorageBuffer, HasComputeCommandPool,
-                             KnownNat ComputeShaderCount)
+                             HasVertexStorageBuffer, HasComputeCommandPool, HasComputeStorageBuffers,
+                             KnownNat ComputeShaderCount, KnownNat ComputeStorageBufferCount)
                           => ResIO ([ReleaseKey], ComputeMutables)
 constructComputeMutables = do
   (layoutKey    , pipelineLayout ) <- constructComputePipelineLayout
@@ -60,7 +63,8 @@ constructCommandBuffer = do
 
 constructDescriptorSets :: (HasDevice, HasComputeUniformBuffer, HasComputeDescriptorSetLayoutInfo,
                             HasComputeDescriptorSetLayouts, HasComputeUniformBufferSize,
-                            HasComputeStorageBuffer, HasVertexBufferInfo)
+                            HasVertexStorageBuffer, HasVertexBufferInfo, HasComputeStorageBuffers,
+                            KnownNat ComputeStorageBufferCount, HasComputeStorageData)
                         => ResIO (ReleaseKey, Vector DescriptorSet)
 constructDescriptorSets = do
   let poolSizes = ?computeDescriptorSetLayoutInfo <&> \layoutInfo ->
@@ -74,28 +78,37 @@ constructDescriptorSets = do
   descriptorSets <- allocateDescriptorSets ?device allocInfo
 
   let uniformBufferInfo = [ zero{ buffer = fst ?computeUniformBuffer
-                                , offset = 0
                                 , range = ?computeUniformBufferSize
                                 } :: DescriptorBufferInfo
                           ]
-      storageBufferInfo = [ zero{ buffer = ?computeStorageBuffer
-                                , offset = 0
-                                , range = ?vertexBufferInfo.size
-                                } :: DescriptorBufferInfo
-                          ]
-  -- TODO this isn't really fully general yet for other descriptor set layouts
-  let descriptorWrites = (\f -> V.zipWith f ?computeDescriptorSetLayoutInfo descriptorSets)
-        \layoutInfo descriptorSet -> let type' = (V.head layoutInfo.bindings).descriptorType in
-           SomeStruct zero{ dstSet = descriptorSet
-                          , dstBinding = 0
-                          , dstArrayElement = 0
-                          , descriptorType = type'
-                          , descriptorCount = 1
-                          , bufferInfo = if type' == DESCRIPTOR_TYPE_UNIFORM_BUFFER
-                                         then uniformBufferInfo
-                                         else storageBufferInfo
-                          } :: SomeStruct WriteDescriptorSet
-  updateDescriptorSets ?device descriptorWrites []
+  let descriptorWrites = concat $ (\f -> V.zipWith f ?computeDescriptorSetLayoutInfo descriptorSets)
+        \layoutInfo descriptorSet -> let type' = (V.head layoutInfo.bindings).descriptorType in do
+          let descriptorWrite = zero{ dstSet = descriptorSet
+                                    , dstBinding = 0
+                                    , dstArrayElement = 0
+                                    , descriptorType = type'
+                                    , descriptorCount = 1
+                                    } :: WriteDescriptorSet '[]
+          if type' == DESCRIPTOR_TYPE_UNIFORM_BUFFER
+          then [SomeStruct descriptorWrite{bufferInfo = uniformBufferInfo}]
+          -- binding vertex buffer as first storage buffer
+          else [ SomeStruct descriptorWrite
+                   { bufferInfo = [ zero{ buffer = ?vertexStorageBuffer
+                                        , range = ?vertexBufferInfo.size
+                                        } :: DescriptorBufferInfo
+                                  ]
+                   }
+               ] <> do
+                 -- then binding all other storage buffers
+                 finites @ComputeStorageBufferCount <&> \binding ->
+                   case ?computeStorageData^.Sized'.ix binding of
+                      MkStorageData dat -> do
+                        let bufferInfo = [
+                              zero{ buffer = ?computeStorageBuffers^.Sized'.ix binding
+                                  , range = fromIntegral $ sizeOf dat
+                                  } :: DescriptorBufferInfo]
+                        SomeStruct descriptorWrite{bufferInfo, dstBinding = fromIntegral binding + 1}
+  updateDescriptorSets ?device (V.fromList descriptorWrites) []
   pure (poolKey, descriptorSets)
 
 constructComputePipelineLayout :: (HasDevice, HasComputeDescriptorSetLayouts,
@@ -128,8 +141,8 @@ constructComputePipelines layout = do
   logDebug "Created compute pipeline."
   pure computePipeline
 
-recreateComputePipeline :: (HasLogger, HasVulkanResources, HasComputeStorageBuffer,
-                            KnownNat ComputeShaderCount)
+recreateComputePipeline :: (HasLogger, HasVulkanResources, HasVertexStorageBuffer,
+                            KnownNat ComputeShaderCount, KnownNat ComputeStorageBufferCount)
                         => (HasVulkanResources => ResIO ()) -> ResIO ()
 recreateComputePipeline setupCommands = do
   logDebug "Recreating compute pipeline..."

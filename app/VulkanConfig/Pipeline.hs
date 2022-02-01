@@ -5,10 +5,12 @@ module VulkanConfig.Pipeline where
 
 import RIO hiding (logInfo, logWarn, logError, logDebug)
 import Data.Vector.Storable.Sized qualified as Sized
+import Data.Vector.Sized qualified as Sized'
 
 import Foreign.Storable.Tuple ()
 import Foreign (sizeOf, (.|.))
 import GHC.Exts (proxy#)
+import GHC.TypeNats (type (*))
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , IOSSurfaceCreateInfoMVK(view)
@@ -23,6 +25,12 @@ import VulkanSetup.Types
 import Utils
 
 type SizeFloat = 4
+
+type instance ComputeStorageBufferCount = 2
+
+computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
+computeStorageData = Sized'.replicate . MkStorageData $
+  Sized.replicate @(4 * SizeFloat * NumVertices) @Float 0
 
 type NumVertices = 19
 type Size0 = 2
@@ -39,25 +47,25 @@ offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 -- 2D position, RGB color
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Sized.Vector Size1 Float)
 vertexData = Sized.fromTuple
-  ( vertex ( 0.5, -0.9) ( 0.5,  0.7,  0.9)
-  , vertex ( 0.1, -0.8) ( 0.5,  0.7,  0.9)
-  , vertex (-0.2, -0.7) ( 0.5,  0.7,  0.9)
-  , vertex (-0.3, -0.6) ( 0.5,  0.7,  0.9)
-  , vertex (-0.7, -0.5) ( 0.5,  0.7,  0.9)
-  , vertex ( 0.6, -0.4) ( 0.5,  0.7,  0.9)
-  , vertex (-0.2, -0.3) ( 0.5,  0.7,  0.9)
-  , vertex ( 0.8, -0.2) ( 0.5,  0.7,  0.9)
-  , vertex ( 0.1, -0.1) ( 0.5,  0.7,  0.9)
-  , vertex (-0.9,  0  ) ( 0.5,  0.7,  0.9)
-  , vertex (-0.5,  0.1) ( 0.5,  0.7,  0.9)
-  , vertex ( 0.6,  0.2) ( 0.5,  0.7,  0.9)
-  , vertex ( 0.7,  0.3) ( 0.5,  0.7,  0.9)
-  , vertex (-0.1,  0.4) ( 0.5,  0.7,  0.9)
-  , vertex ( 0.2,  0.5) ( 0.5,  0.7,  0.9)
-  , vertex (-0.2,  0.6) ( 0.5,  0.7,  0.9)
-  , vertex (-0.9,  0.7) ( 0.5,  0.7,  0.9)
-  , vertex (-0.3,  0.8) ( 0.5,  0.7,  0.9)
-  , vertex ( 0.4,  0.9) ( 0.5,  0.7,  0.9)
+  ( vertex ( 0.5, -0.9) ( 0.5,  0.1,  0.9)
+  , vertex ( 0.1, -0.8) ( 0.5,  0.1,  0.9)
+  , vertex (-0.2, -0.7) ( 0.5,  0.1,  0.9)
+  , vertex (-0.3, -0.6) ( 0.5,  0.1,  0.9)
+  , vertex (-0.7, -0.5) ( 0.5,  0.1,  0.9)
+  , vertex ( 0.6, -0.4) ( 0.5,  0.1,  0.9)
+  , vertex (-0.2, -0.3) ( 0.5,  0.1,  0.9)
+  , vertex ( 0.8, -0.2) ( 0.5,  0.1,  0.9)
+  , vertex ( 0.1, -0.1) ( 0.5,  0.1,  0.9)
+  , vertex (-0.9,  0  ) ( 0.5,  0.1,  0.9)
+  , vertex (-0.5,  0.1) ( 0.5,  0.1,  0.9)
+  , vertex ( 0.6,  0.2) ( 0.5,  0.1,  0.9)
+  , vertex ( 0.7,  0.3) ( 0.5,  0.1,  0.9)
+  , vertex (-0.1,  0.4) ( 0.5,  0.1,  0.9)
+  , vertex ( 0.2,  0.5) ( 0.5,  0.1,  0.9)
+  , vertex (-0.2,  0.6) ( 0.5,  0.1,  0.9)
+  , vertex (-0.9,  0.7) ( 0.5,  0.1,  0.9)
+  , vertex (-0.3,  0.8) ( 0.5,  0.1,  0.9)
+  , vertex ( 0.4,  0.9) ( 0.5,  0.1,  0.9)
   )
   where vertex (a, b) (c, d, e) = (Sized.fromTuple (a, b), Sized.fromTuple (c, d, e))
 
@@ -80,16 +88,17 @@ setupComputeCommands = do
   mutables <- readRes ?computeMutables
   useCommandBuffer mutables.commandBuffer zero{flags = COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT} do
     -- TODO: consider having VERTEX_SHADER_BIT as dstStageMask specifically for
-    -- updPos if it doesn't negatively impact performance
+    -- updPos (or possibly for all shaders for convenience) if it doesn't
+    -- negatively impact performance
     let memoryBarrier = zero{ srcAccessMask = ACCESS_SHADER_WRITE_BIT
                             , dstAccessMask = ACCESS_SHADER_READ_BIT
                             } :: MemoryBarrier
         stageMask = PIPELINE_STAGE_TRANSFER_BIT .|. PIPELINE_STAGE_COMPUTE_SHADER_BIT
+    cmdBindDescriptorSets mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE
+                          mutables.pipelineLayout 0 mutables.descriptorSets []
     for_ (Sized.toList mutables.pipelines) \pipeline -> do
       cmdPipelineBarrier mutables.commandBuffer stageMask stageMask zero [memoryBarrier] [] []
       cmdBindPipeline mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE pipeline
-      cmdBindDescriptorSets mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE
-                            mutables.pipelineLayout 0 mutables.descriptorSets []
       cmdDispatch mutables.commandBuffer 1 1 1
 
   logDebug "Set up compute commands"
@@ -169,27 +178,29 @@ computeDescriptorSetLayoutInfo = [ zero{bindings = uniformBindings}
                             , stageFlags = SHADER_STAGE_COMPUTE_BIT
                             }
                       ]
-    storageBindings = [ zero{ binding = 0
-                            , descriptorType = DESCRIPTOR_TYPE_STORAGE_BUFFER
-                            , descriptorCount = 1
-                            , stageFlags = SHADER_STAGE_COMPUTE_BIT
-                            }
-                      ]
+    -- storage bindings for all storage buffers + the vertex storage buffer
+    storageBindings = [0..integralNatVal @ComputeStorageBufferCount] <&> \binding ->
+      zero{ binding
+          , descriptorType = DESCRIPTOR_TYPE_STORAGE_BUFFER
+          , descriptorCount = 1
+          , stageFlags = SHADER_STAGE_COMPUTE_BIT
+          }
 
 vulkanConfig :: MonadIO m => m (Dict HasVulkanConfig)
 vulkanConfig = do
   graphicsUboData'@(MkUboData graphicsUboProxy _ _) <- graphicsUboData
   computeUboData'@(MkUboData computeUboProxy _ _) <- computeUboData
-  let ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
-      ?computePipelineLayoutInfo = computePipelineLayoutInfo
-      ?vertexInputInfo = vertexInputInfo
-      ?vertexBufferInfo = vertexBufferInfo
-      ?vertexData = MkVertexData VulkanConfig.Pipeline.vertexData
+  let ?graphicsPipelineLayoutInfo      = graphicsPipelineLayoutInfo
+      ?computePipelineLayoutInfo       = computePipelineLayoutInfo
+      ?vertexInputInfo                 = vertexInputInfo
+      ?vertexBufferInfo                = vertexBufferInfo
+      ?vertexData                      = MkVertexData VulkanConfig.Pipeline.vertexData
       ?graphicsDescriptorSetLayoutInfo = graphicsDescriptorSetLayoutInfo
-      ?computeDescriptorSetLayoutInfo = computeDescriptorSetLayoutInfo
-      ?graphicsUniformBufferSize = fromIntegral $ sizeOfProxied graphicsUboProxy
-      ?graphicsUboData = graphicsUboData'
-      ?computeUniformBufferSize = fromIntegral $ sizeOfProxied computeUboProxy
-      ?computeUboData = computeUboData'
-      ?desiredSwapchainImageNum = 3
+      ?computeDescriptorSetLayoutInfo  = computeDescriptorSetLayoutInfo
+      ?graphicsUniformBufferSize       = fromIntegral $ sizeOfProxied graphicsUboProxy
+      ?graphicsUboData                 = graphicsUboData'
+      ?computeUniformBufferSize        = fromIntegral $ sizeOfProxied computeUboProxy
+      ?computeUboData                  = computeUboData'
+      ?computeStorageData              = computeStorageData
+      ?desiredSwapchainImageNum        = 3
   pure Dict

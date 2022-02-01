@@ -26,7 +26,7 @@ type instance ComputeShaderCount = 2
 type ComputeUniformInput = Struct
   '[ "sign" ':-> Word32 ]
 
-type UpdatePosLocalSize = 256
+type UpdatePosLocalSize = 64
 
 type UpdatePosDefs =
   '[ "ubo"       ':-> Uniform      '[DescriptorSet 0, Binding 0      ] ComputeUniformInput
@@ -46,9 +46,9 @@ updatePos = Module $ entryPoint @"main" @Compute do
     ubo <- #ubo
     sign :: Code Float <- let' $ if ubo.sign == 0 then -1 else 1
 
-    realGid <- let' $ Lit numVertexEntries * gid
-    selfX <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) realGid
-    selfY <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + 1)
+    vertGid <- let' $ Lit numVertexEntries * gid
+    selfX <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) vertGid
+    selfY <- use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (vertGid + 1)
 
 
     -- subtract own position to find center of others
@@ -62,13 +62,13 @@ updatePos = Module $ entryPoint @"main" @Compute do
       #sum %= (^+^ Vec2 x y)
 
     center <- #sum <<&>> (^/ Lit (fromIntegral numVertices))
-    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) realGid \x ->
+    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) vertGid \x ->
       x - 0.00001 * (x - center.x) * sign
-    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + 1) \y ->
+    modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (vertGid + 1) \y ->
       y - 0.00001 * (y - center.y) * sign
     pure (Lit ())
 
-type UpdateAccLocalSize = 256
+type UpdateAccLocalSize = 8
 
 type UpdateAccDefs =
   '[ "ubo"       ':-> Uniform      '[DescriptorSet 0, Binding 0      ] ComputeUniformInput
@@ -78,20 +78,22 @@ type UpdateAccDefs =
                       -- Struct ["pos" ':-> V 2 Float, "col" ':-> V 3 Float]
                       -- But the alignment doesn't work out since this is also
                       -- the vertex buffer
-   , "main"      ':-> EntryPoint   '[LocalSize UpdatePosLocalSize 1 1] Compute
+   , "accels"    ':-> StorageBuffer [DescriptorSet 1, Binding 2      ]
+                      (Struct '["accArray" ':-> RuntimeArray (V 4 Float)])
+   , "main"      ':-> EntryPoint   '[LocalSize UpdateAccLocalSize UpdateAccLocalSize 1] Compute
    ]
 
-updateAcc :: Module UpdatePosDefs
+updateAcc :: Module UpdateAccDefs
 updateAcc = Module $ entryPoint @"main" @Compute do
   gid <- #gl_GlobalInvocationID <<&>> \i -> i.x
   when (gid < Lit numVertices) $ locally do
-    realGid <- let' $ Lit numVertexEntries * gid
+    vertGid <- let' $ Lit numVertexEntries * gid
 
     sign <- let' $ if gid `mod` 2 == 0 then 1 else -1
 
     -- subtract own position to find center of others
-    let usePos n = use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + n)
-    let assignPos n = assign @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + n)
+    let usePos n = use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (vertGid + n)
+        assignPos n = assign @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (vertGid + n)
     pos <- Vec2 <<$>> usePos 0 <<*>> usePos 1
 
     phi <- let' $ sign * 0.00001
@@ -99,6 +101,10 @@ updateAcc = Module $ entryPoint @"main" @Compute do
     pos' <- let' $ rot !*^ pos
     assignPos 0 pos'.x
     assignPos 1 pos'.y
+
+    modifying @(Name "accels" :.: Name "accArray" :.: AnIndex Word32 :.: Swizzle "y") gid (+0.00001)
+    g <- use @(Name "accels" :.: Name "accArray" :.: AnIndex Word32 :.: Swizzle "y") gid
+    assignPos 3 g
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float

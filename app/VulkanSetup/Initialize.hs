@@ -6,7 +6,6 @@ import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.ByteString qualified as B
 import RIO.NonEmpty qualified as NE
 import RIO.Vector qualified as V
-import RIO.Vector.Storable.Partial qualified as VS
 import RIO.Vector.Storable.Unsafe qualified as VS
 
 import Control.Lens ((??), ix)
@@ -335,7 +334,7 @@ initVertexBuffer = do
   liftIO $ withMappedMemory ?device stagingMemory 0 ?vertexBufferInfo.size zero bracket \target -> do
     MkVertexData vertexData <- pure ?vertexData
     VS.unsafeWith (Sized.SomeSized vertexData) \(castPtr -> source) ->
-      copyBytes target source $ Sized.length vertexData * sizeOf (VS.head $ Sized.SomeSized vertexData)
+      copyBytes target source $ fromIntegral ?vertexBufferInfo.size
 
   let vertBufProps = MEMORY_PROPERTY_DEVICE_LOCAL_BIT
   ((_, vertexBuffer), _) <- constructBuffer ?vertexBufferInfo vertBufProps
@@ -347,6 +346,42 @@ initVertexBuffer = do
   traverse_ @[] release [sBufKey, sMemKey]
 
   logDebug "Created vertex buffer."
+  pure Dict
+
+-- TODO factor out common code with initVertexBuffer
+initComputeStorageBuffers :: (HasLogger, HasPhysicalDevice, HasDevice, HasComputeCommandPool,
+                              HasComputeQueue, HasComputeStorageData)
+                          => ResIO (Dict HasComputeStorageBuffers)
+initComputeStorageBuffers = do
+  storageBuffers <- for ?computeStorageData \(MkStorageData storageData) -> do
+    let size = fromIntegral $ sizeOf storageData
+        stagingBufInfo = zero{ size
+                             , usage = BUFFER_USAGE_TRANSFER_SRC_BIT
+                             , sharingMode = SHARING_MODE_EXCLUSIVE
+                             }
+        stagingBufProps = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
+    ((sBufKey, stagingBuffer), (sMemKey, stagingMemory)) <-
+      constructBuffer stagingBufInfo stagingBufProps
+
+    liftIO $ withMappedMemory ?device stagingMemory 0 size zero bracket \target -> do
+      VS.unsafeWith (Sized.SomeSized storageData) \(castPtr -> source) ->
+        copyBytes target source $ sizeOf storageData
+
+    let storageBufInfo = stagingBufInfo{ usage = BUFFER_USAGE_TRANSFER_DST_BIT
+                                             .|. BUFFER_USAGE_STORAGE_BUFFER_BIT
+                                       } :: BufferCreateInfo '[]
+        storageBufProps = MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+    ((_, storageBuffer), _) <- constructBuffer storageBufInfo storageBufProps
+
+    copyBuffer ?computeCommandPool ?computeQueue stagingBuffer storageBuffer size
+
+    -- We don't need the staging buffer anymore
+    traverse_ @[] release [sBufKey, sMemKey]
+
+    pure storageBuffer
+  let ?computeStorageBuffers = storageBuffers
+
+  logDebug "Created compute storage buffers."
   pure Dict
 
 initGraphicsUniformBuffers :: (HasLogger, HasSurface, HasPhysicalDevice, HasDevice,
@@ -372,8 +407,8 @@ initGraphicsUniformBuffers = do
   pure Dict
 
 initComputeUniformBuffer :: (HasLogger, HasPhysicalDevice, HasDevice,
-                              HasComputeUniformBufferSize)
-                          => ResIO (Dict HasComputeUniformBuffer)
+                             HasComputeUniformBufferSize)
+                         => ResIO (Dict HasComputeUniformBuffer)
 initComputeUniformBuffer = do
   let bufInfo = zero{ size = ?computeUniformBufferSize
                     , usage = BUFFER_USAGE_UNIFORM_BUFFER_BIT
@@ -402,9 +437,9 @@ initComputeDescriptorSetLayout = do
   let ?computeDescriptorSetLayouts = layouts
   pure Dict
 
-initComputeStorageBuffer :: HasVertexBuffer => ResIO (Dict HasComputeStorageBuffer)
-initComputeStorageBuffer = do
-  let ?computeStorageBuffer = ?vertexBuffer
+initVertexStorageBuffer :: HasVertexBuffer => ResIO (Dict HasVertexStorageBuffer)
+initVertexStorageBuffer = do
+  let ?vertexStorageBuffer = ?vertexBuffer
   pure Dict
 
 initComputeFences :: HasDevice => ResIO (Dict HasComputeFences)
@@ -429,7 +464,7 @@ initSyncs = do
   pure Dict
 
 initializeVulkan :: (HasLogger, HasConfig, HasShaderPaths, HasVulkanConfig,
-                     KnownNat ComputeShaderCount)
+                     KnownNat ComputeShaderCount, KnownNat ComputeStorageBufferCount)
                  => (HasVulkanResources => ResIO ()) -> (HasVulkanResources => ResIO ())
                  -> ResIO (Dict HasVulkanResources)
 initializeVulkan setupGraphicsCommands setupComputeCommands = do
@@ -448,7 +483,8 @@ initializeVulkan setupGraphicsCommands setupComputeCommands = do
   Dict <- initGraphicsMutables
   Dict <- initComputeUniformBuffer
   Dict <- initComputeDescriptorSetLayout
-  Dict <- initComputeStorageBuffer
+  Dict <- initVertexStorageBuffer
+  Dict <- initComputeStorageBuffers
   Dict <- initComputeFences
   Dict <- initComputeMutables
   Dict <- initSyncs

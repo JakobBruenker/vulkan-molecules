@@ -1,6 +1,8 @@
 module VulkanSetup.Utils where
 
 import RIO
+import RIO.NonEmpty qualified as NE
+import Data.List.Extra
 import Data.Tuple (swap)
 
 import VulkanSetup.Types
@@ -28,6 +30,9 @@ clamp (low, high) a = min high (max a low)
 
 viewRef :: (MonadReader s m, MonadIO m) => Getting (IORef a) s (IORef a) -> m a
 viewRef l = readIORef =<< view l
+
+nonEmptyInits :: NonEmpty a -> NonEmpty (NonEmpty a)
+nonEmptyInits (x:|xs) = (x :|) <$> NE.scanl snoc [] xs
 
 withShader :: (MonadUnliftIO m, HasDevice) => FilePath -> (ShaderModule -> m r) -> m r
 withShader path action = do
