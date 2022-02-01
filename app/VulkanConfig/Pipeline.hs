@@ -26,7 +26,7 @@ import Utils
 
 type SizeFloat = 4
 
-type instance ComputeStorageBufferCount = 2
+type instance ComputeStorageBufferCount = 3
 
 computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
 computeStorageData = Sized'.replicate . MkStorageData $
@@ -34,7 +34,7 @@ computeStorageData = Sized'.replicate . MkStorageData $
 
 type NumVertices = 19
 type Size0 = 2
-type Size1 = 3
+type Size1 = 2
 
 numVertices, numVertexEntries, floatSize, vertexSize, offset0, offset1 :: Word32
 numVertices = fromIntegral $ Sized.length VulkanConfig.Pipeline.vertexData
@@ -47,27 +47,27 @@ offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 -- 2D position, RGB color
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Sized.Vector Size1 Float)
 vertexData = Sized.fromTuple
-  ( vertex ( 0.5, -0.9) ( 0.5,  0.1,  0.9)
-  , vertex ( 0.1, -0.8) ( 0.5,  0.1,  0.9)
-  , vertex (-0.2, -0.7) ( 0.5,  0.1,  0.9)
-  , vertex (-0.3, -0.6) ( 0.5,  0.1,  0.9)
-  , vertex (-0.7, -0.5) ( 0.5,  0.1,  0.9)
-  , vertex ( 0.6, -0.4) ( 0.5,  0.1,  0.9)
-  , vertex (-0.2, -0.3) ( 0.5,  0.1,  0.9)
-  , vertex ( 0.8, -0.2) ( 0.5,  0.1,  0.9)
-  , vertex ( 0.1, -0.1) ( 0.5,  0.1,  0.9)
-  , vertex (-0.9,  0  ) ( 0.5,  0.1,  0.9)
-  , vertex (-0.5,  0.1) ( 0.5,  0.1,  0.9)
-  , vertex ( 0.6,  0.2) ( 0.5,  0.1,  0.9)
-  , vertex ( 0.7,  0.3) ( 0.5,  0.1,  0.9)
-  , vertex (-0.1,  0.4) ( 0.5,  0.1,  0.9)
-  , vertex ( 0.2,  0.5) ( 0.5,  0.1,  0.9)
-  , vertex (-0.2,  0.6) ( 0.5,  0.1,  0.9)
-  , vertex (-0.9,  0.7) ( 0.5,  0.1,  0.9)
-  , vertex (-0.3,  0.8) ( 0.5,  0.1,  0.9)
-  , vertex ( 0.4,  0.9) ( 0.5,  0.1,  0.9)
+  ( vertex ( 0.5, -0.9) ( 0.5,  0.5)
+  , vertex ( 0.1, -0.8) ( 0.5,  0.5)
+  , vertex (-0.2, -0.7) ( 0.5,  0.5)
+  , vertex (-0.3, -0.6) ( 0.5,  0.5)
+  , vertex (-0.7, -0.5) ( 0.5,  0.5)
+  , vertex ( 0.6, -0.4) ( 0.5,  0.5)
+  , vertex (-0.2, -0.3) ( 0.5,  0.5)
+  , vertex ( 0.8, -0.2) ( 0.5,  0.5)
+  , vertex ( 0.1, -0.1) ( 0.5,  0.5)
+  , vertex (-0.9,  0  ) ( 0.5,  0.5)
+  , vertex (-0.5,  0.1) ( 0.5,  0.5)
+  , vertex ( 0.6,  0.2) ( 0.5,  0.5)
+  , vertex ( 0.7,  0.3) ( 0.5,  0.5)
+  , vertex (-0.1,  0.4) ( 0.5,  0.5)
+  , vertex ( 0.2,  0.5) ( 0.5,  0.5)
+  , vertex (-0.2,  0.6) ( 0.5,  0.5)
+  , vertex (-0.9,  0.7) ( 0.5,  0.5)
+  , vertex (-0.3,  0.8) ( 0.5,  0.5)
+  , vertex ( 0.4,  0.9) ( 0.5,  0.5)
   )
-  where vertex (a, b) (c, d, e) = (Sized.fromTuple (a, b), Sized.fromTuple (c, d, e))
+  where vertex (a, b) (c, d) = (Sized.fromTuple (a, b), Sized.fromTuple (c, d))
 
 type GraphicsUboContents = ("time" ::: Float, "window width" ::: Int32, "window height" ::: Int32)
 type instance UboInput Graphics = ("window width" ::: Int32, "window height" ::: Int32)
@@ -76,12 +76,12 @@ graphicsUboData :: MonadIO m => m (UboData Graphics)
 graphicsUboData = MkUboData proxy# (\(w, h) (i, _, _) -> (i + 1, w, h)) <$>
   newIORef @_ @GraphicsUboContents (0, 0, 0)
 
-type ComputeUboContents = ("index" ::: Word32)
+type ComputeUboContents = ("dt" ::: Float)
 type instance UboInput Compute = ()
 
 computeUboData :: MonadIO m => m (UboData Compute)
-computeUboData = MkUboData proxy# (\_ i -> (i + 1) `mod` 2) <$>
-  newIORef @_ @ComputeUboContents 1
+computeUboData = MkUboData proxy# (const id) <$>
+  newIORef @_ @ComputeUboContents 0.0001
 
 setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupComputeCommands = do
@@ -99,6 +99,7 @@ setupComputeCommands = do
     for_ (Sized.toList mutables.pipelines) \pipeline -> do
       cmdPipelineBarrier mutables.commandBuffer stageMask stageMask zero [memoryBarrier] [] []
       cmdBindPipeline mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE pipeline
+      -- TODO get the size by checking local size and number of particles
       cmdDispatch mutables.commandBuffer 1 1 1
 
   logDebug "Set up compute commands"
