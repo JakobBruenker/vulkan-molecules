@@ -7,6 +7,8 @@ import qualified RIO.Vector as V
 import qualified RIO.Vector.Partial as V -- TODO get rid of this import
 
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, ResIO)
+import qualified Data.Vector.Storable.Sized as Sized
+import GHC.TypeNats (KnownNat)
 import Foreign.Storable.Tuple ()
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -22,22 +24,24 @@ import Utils
 import VulkanSetup.Types
 import VulkanSetup.Utils
 
-initComputeMutables :: (HasLogger, HasComputeShaderPath, HasVulkanConfig,
+initComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
                        HasDevice, HasComputeDescriptorSetLayouts, HasComputeUniformBuffer,
-                       HasComputeStorageBuffer, HasComputeCommandPool)
+                       HasComputeStorageBuffer, HasComputeCommandPool,
+                       KnownNat ComputeShaderCount)
                      => ResIO (Dict HasComputeMutables)
 initComputeMutables = do
   computeMutables <- mkMResources =<< constructComputeMutables
   let ?computeMutables = computeMutables
   pure Dict
 
-constructComputeMutables :: (HasLogger, HasComputeShaderPath, HasVulkanConfig,
+constructComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
                              HasDevice, HasComputeDescriptorSetLayouts, HasComputeUniformBuffer,
-                             HasComputeStorageBuffer, HasComputeCommandPool)
+                             HasComputeStorageBuffer, HasComputeCommandPool,
+                             KnownNat ComputeShaderCount)
                           => ResIO ([ReleaseKey], ComputeMutables)
 constructComputeMutables = do
   (layoutKey    , pipelineLayout ) <- constructComputePipelineLayout
-  (pipelineKey  , pipeline       ) <- constructComputePipeline pipelineLayout
+  (pipelineKey  , pipelines      ) <- constructComputePipelines pipelineLayout
   (dsKey        , descriptorSets ) <- constructDescriptorSets
   (cmdBufKey    , commandBuffer  ) <- constructCommandBuffer
 
@@ -100,31 +104,32 @@ constructComputePipelineLayout :: (HasDevice, HasComputeDescriptorSetLayouts,
 constructComputePipelineLayout = withPipelineLayout
   ?device ?computePipelineLayoutInfo{setLayouts = ?computeDescriptorSetLayouts} Nothing allocate
 
-constructComputePipeline :: (HasLogger, HasDevice, HasComputeShaderPath)
-                         => PipelineLayout -> ResIO (ReleaseKey, Pipeline)
-constructComputePipeline layout = do
-  (releasePipelines, (_, pipelines)) <-
-    withShader ?computeShaderPath \computeModule -> do
+constructComputePipelines :: (HasLogger, HasDevice, HasComputeShaderPaths, KnownNat ComputeShaderCount)
+                          => PipelineLayout
+                          -> ResIO (ReleaseKey, Sized.Vector ComputeShaderCount Pipeline)
+constructComputePipelines layout = do
+  (releasePipelines, (_, pipelineList)) <-
+    withShaders (toList ?computeShaderPaths) \modules -> do
 
-      let computeShaderStageInfo = zero{ stage = SHADER_STAGE_COMPUTE_BIT
-                                       , module' = computeModule
-                                       , name = "main"
-                                       }
-          shaderStage = SomeStruct computeShaderStageInfo
-          pipelineInfo = pure $ SomeStruct zero{ stage = shaderStage
-                                               , layout
-                                               }
+      let pipelineInfos = V.fromList $ modules <&> \module' ->
+            SomeStruct zero{ stage = SomeStruct zero{ stage = SHADER_STAGE_COMPUTE_BIT
+                                                    , module'
+                                                    , name = "main"
+                                                    }
+                           , layout
+                           }
 
-      withComputePipelines ?device zero pipelineInfo Nothing allocate
+      withComputePipelines ?device zero pipelineInfos Nothing allocate
 
-  graphicsPipeline <- case pipelines of
-    [pipeline] -> pure (releasePipelines, pipeline)
-    (length -> num) -> throwIO $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
+  computePipeline <- case Sized.fromList (toList pipelineList) of
+    Just pipelines -> pure (releasePipelines, pipelines)
+    (length -> num) -> throwIO $ VkWrongNumberOfComputePipelines 1 $ fromIntegral num
 
   logDebug "Created compute pipeline."
-  pure graphicsPipeline
+  pure computePipeline
 
-recreateComputePipeline :: (HasLogger, HasVulkanResources, HasComputeStorageBuffer)
+recreateComputePipeline :: (HasLogger, HasVulkanResources, HasComputeStorageBuffer,
+                            KnownNat ComputeShaderCount)
                         => (HasVulkanResources => ResIO ()) -> ResIO ()
 recreateComputePipeline setupCommands = do
   logDebug "Recreating compute pipeline..."

@@ -79,10 +79,18 @@ setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupComputeCommands = do
   mutables <- readRes ?computeMutables
   useCommandBuffer mutables.commandBuffer zero{flags = COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT} do
-    cmdBindPipeline mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE mutables.pipeline
-    cmdBindDescriptorSets mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE
-                          mutables.pipelineLayout 0 mutables.descriptorSets []
-    cmdDispatch mutables.commandBuffer 1 1 1
+    -- TODO: consider having VERTEX_SHADER_BIT as dstStageMask specifically for
+    -- updPos if it doesn't negatively impact performance
+    let memoryBarrier = zero{ srcAccessMask = ACCESS_SHADER_WRITE_BIT
+                            , dstAccessMask = ACCESS_SHADER_READ_BIT
+                            } :: MemoryBarrier
+        stageMask = PIPELINE_STAGE_TRANSFER_BIT .|. PIPELINE_STAGE_COMPUTE_SHADER_BIT
+    for_ (Sized.toList mutables.pipelines) \pipeline -> do
+      cmdPipelineBarrier mutables.commandBuffer stageMask stageMask zero [memoryBarrier] [] []
+      cmdBindPipeline mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE pipeline
+      cmdBindDescriptorSets mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE
+                            mutables.pipelineLayout 0 mutables.descriptorSets []
+      cmdDispatch mutables.commandBuffer 1 1 1
 
   logDebug "Set up compute commands"
 

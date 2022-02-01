@@ -25,6 +25,7 @@ import Foreign.Storable.Tuple ()
 import Control.Lens.Combinators (ifind)
 import Data.Vector.Storable.Sized qualified as Sized
 import Data.Tuple.Extra (dupe, both)
+import GHC.TypeNats (KnownNat)
 
 import Graphics.UI.GLFW qualified as GLFW
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -427,7 +428,8 @@ initSyncs = do
   logDebug "Created syncs."
   pure Dict
 
-initializeVulkan :: (HasLogger, HasConfig, HasShaderPaths, HasVulkanConfig)
+initializeVulkan :: (HasLogger, HasConfig, HasShaderPaths, HasVulkanConfig,
+                     KnownNat ComputeShaderCount)
                  => (HasVulkanResources => ResIO ()) -> (HasVulkanResources => ResIO ())
                  -> ResIO (Dict HasVulkanResources)
 initializeVulkan setupGraphicsCommands setupComputeCommands = do

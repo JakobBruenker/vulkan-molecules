@@ -9,6 +9,7 @@ import RIO.ByteString qualified as B
 import RIO.Text qualified as T
 
 import Data.Vector.Storable.Sized qualified as Sized
+import Data.Vector.Sized qualified as Sized'
 import Graphics.UI.GLFW qualified as GLFW
 import Control.Monad.Trans.Resource (ReleaseKey, release)
 
@@ -36,6 +37,7 @@ data AppException
   | VkNoSuitableDevices
   | VkWrongNumberOfCommandBuffers ("expected" ::: Natural) ("actual" ::: Natural)
   | VkWrongNumberOfGraphicsPipelines ("expected" ::: Natural) ("actual" ::: Natural)
+  | VkWrongNumberOfComputePipelines ("expected" ::: Natural) ("actual" ::: Natural)
   | VkCommandBufferIndexOutOfRange
   | VkUniformBufferIndexOutOfRange
   | VkNoSuitableMemoryType
@@ -48,25 +50,39 @@ instance Show AppException where
 instance Display AppException where
   display = \case
     GLFWInitError -> "Failed to initialize GLFW."
+
     GLFWWindowError -> "Failed to create window."
+
     GLFWVulkanNotSupported -> "GLFW failed to find Vulkan loader or ICD."
+
     VkValidationLayersNotSupported ls ->
       "Requested validation layer" <> num <> " not supported: " <>
         (displayBytesUtf8 . B.intercalate ", " . toList) ls <> "."
       where num | _ :| [] <- ls = " is"
                 | otherwise     = "s are"
+
     VkNoPhysicalDevices -> "No physical devices found."
+
     VkNoSuitableDevices -> "No suitable devices found."
+
     VkWrongNumberOfCommandBuffers expected actual ->
       "Wrong number of graphics pipelines was created: Expected " <>
       displayShow expected <> " but got " <> displayShow actual <> "."
+
     VkWrongNumberOfGraphicsPipelines expected actual ->
       "Wrong number of graphics pipelines was created: Expected " <>
       displayShow expected <> " but got " <> displayShow actual <> "."
+
+    VkWrongNumberOfComputePipelines expected actual ->
+      "Wrong number of compute pipelines was created: Expected " <>
+      displayShow expected <> " but got " <> displayShow actual <> "."
+
     VkCommandBufferIndexOutOfRange -> "Vulkan requested a command buffer with" <>
       " a higher index than was allocated."
+
     VkUniformBufferIndexOutOfRange -> "Program requested a uniform buffer with" <>
       " a higher index than was allocated."
+
     VkNoSuitableMemoryType -> "Coludn't find a suitable memory type for Vulkan buffer creation."
 
 -- abstract type to keep track of whether GLFW is initialized
@@ -113,7 +129,7 @@ data GraphicsMutables = MkGraphicsMutables { imageRelateds   :: Vector ImageRela
                                            }
 
 data ComputeMutables = MkComputeMutables { pipelineLayout :: PipelineLayout
-                                         , pipeline       :: Pipeline
+                                         , pipelines      :: Sized.Vector ComputeShaderCount Pipeline
                                          , descriptorSets :: Vector DescriptorSet
                                          , commandBuffer  :: CommandBuffer
                                          }
@@ -208,12 +224,14 @@ type HasSyncs = ( HasImageAvailable
 type HasGraphicsMutables = ?graphicsMutables :: MResources GraphicsMutables
 type HasComputeMutables  = ?computeMutables  :: MResources ComputeMutables
 
+type family ComputeShaderCount :: Natural
+
 type HasVertexShaderPath   = ?vertexShaderPath   :: FilePath
 type HasFragmentShaderPath = ?fragmentShaderPath :: FilePath
-type HasComputeShaderPath  = ?computeShaderPath  :: FilePath
+type HasComputeShaderPaths = ?computeShaderPaths :: Sized'.Vector ComputeShaderCount FilePath
 type HasShaderPaths = ( HasVertexShaderPath
                       , HasFragmentShaderPath
-                      , HasComputeShaderPath
+                      , HasComputeShaderPaths
                       )
 
 type UboInput :: UboUsage -> Type

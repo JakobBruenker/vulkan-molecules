@@ -8,6 +8,7 @@ module VulkanConfig.Shaders where
 
 import GHC.Records
 import Data.Function
+import Data.Vector.Sized qualified as Sized
 
 import FIR
 import FIR.Syntax.Labels
@@ -19,6 +20,8 @@ import RIO.FilePath ((</>))
 import VulkanSetup.Types
 import VulkanConfig.FIRUtils ()
 import VulkanConfig.Pipeline (numVertices, numVertexEntries)
+
+type instance ComputeShaderCount = 2
 
 type ComputeUniformInput = Struct
   '[ "sign" ':-> Word32 ]
@@ -49,7 +52,7 @@ updatePos = Module $ entryPoint @"main" @Compute do
 
 
     -- subtract own position to find center of others
-    #sum @(V 2 Float) #= Vec2 -selfX -selfY
+    #sum #= Vec2 -selfX -selfY
     #index #= 0
     while (#index <<&>> (< Lit numVertices)) do
       #index %= (+ 1)
@@ -63,6 +66,39 @@ updatePos = Module $ entryPoint @"main" @Compute do
       x - 0.00001 * (x - center.x) * sign
     modifying @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + 1) \y ->
       y - 0.00001 * (y - center.y) * sign
+    pure (Lit ())
+
+type UpdateAccLocalSize = 256
+
+type UpdateAccDefs =
+  '[ "ubo"       ':-> Uniform      '[DescriptorSet 0, Binding 0      ] ComputeUniformInput
+   , "positions" ':-> StorageBuffer [DescriptorSet 1, Binding 0      ]
+                      (Struct '["posArray" ':-> RuntimeArray Float])
+                      -- really, this should be a RuntimeArray with
+                      -- Struct ["pos" ':-> V 2 Float, "col" ':-> V 3 Float]
+                      -- But the alignment doesn't work out since this is also
+                      -- the vertex buffer
+   , "main"      ':-> EntryPoint   '[LocalSize UpdatePosLocalSize 1 1] Compute
+   ]
+
+updateAcc :: Module UpdatePosDefs
+updateAcc = Module $ entryPoint @"main" @Compute do
+  gid <- #gl_GlobalInvocationID <<&>> \i -> i.x
+  when (gid < Lit numVertices) $ locally do
+    realGid <- let' $ Lit numVertexEntries * gid
+
+    sign <- let' $ if gid `mod` 2 == 0 then 1 else -1
+
+    -- subtract own position to find center of others
+    let usePos n = use @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + n)
+    let assignPos n = assign @(Name "positions" :.: Name "posArray" :.: AnIndex Word32) (realGid + n)
+    pos <- Vec2 <<$>> usePos 0 <<*>> usePos 1
+
+    phi <- let' $ sign * 0.00001
+    rot <- let' $ Mat22 (cos phi) (sin phi) -(sin phi) (cos phi)
+    pos' <- let' $ rot !*^ pos
+    assignPos 0 pos'.x
+    assignPos 1 pos'.y
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -119,22 +155,24 @@ shaderPipeline = ShaderPipeline $ StructInput @VertexInput @Points
   :>-> (vertex  , vertexShaderPath  )
   :>-> (fragment, fragmentShaderPath)
 
-shadersPath, vertexShaderPath, fragmentShaderPath, updatePosPath :: FilePath
+shadersPath, vertexShaderPath, fragmentShaderPath, updatePosPath, updateAccPath :: FilePath
 shadersPath = "shaders"
 vertexShaderPath   = shadersPath </> "vert.spv"
 fragmentShaderPath = shadersPath </> "frag.spv"
 updatePosPath      = shadersPath </> "updPos.spv"
+updateAccPath      = shadersPath </> "updAcc.spv"
 
 shaderPaths :: Dict HasShaderPaths
 shaderPaths = Dict
   where ?vertexShaderPath = vertexShaderPath
         ?fragmentShaderPath = fragmentShaderPath
-        ?computeShaderPath = updatePosPath
+        ?computeShaderPaths = Sized.fromTuple (updatePosPath, updateAccPath)
 
 compileAllShaders :: IO ()
 compileAllShaders = sequence_
   [ compileTo vertexShaderPath spirv vertex
   , compileTo fragmentShaderPath spirv fragment
   , compileTo updatePosPath spirv updatePos
+  , compileTo updateAccPath spirv updateAcc
   ]
   where spirv = [SPIRV $ Version 1 3]

@@ -33,3 +33,9 @@ withShader :: (MonadUnliftIO m, HasDevice) => FilePath -> (ShaderModule -> m r) 
 withShader path action = do
   bytes <- readFileBinary path
   withShaderModule ?device zero{code = bytes} Nothing bracket action
+
+withShaders :: (MonadUnliftIO m, HasDevice) => [FilePath] -> ([ShaderModule] -> m r) -> m r
+withShaders = go []
+  where
+    go acc [] action = action $ reverse acc
+    go acc (path:paths) action = withShader path \shader -> go (shader:acc) paths action

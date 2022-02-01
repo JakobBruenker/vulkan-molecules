@@ -9,7 +9,7 @@ import Control.Monad.Trans.Resource (runResourceT, ResIO)
 import Data.Finite (Finite, natToFinite)
 import Data.Tuple (swap)
 import qualified Data.Vector.Storable.Sized as Sized
-import Control.Monad.Extra (fromMaybeM, whenJust, whenJustM)
+import Control.Monad.Extra (fromMaybeM, whenJust)
 import Control.Lens (ix, (??), both)
 import Foreign (castPtr, with, copyBytes)
 import Control.Concurrent (forkIO)
@@ -135,7 +135,7 @@ enqueueCompute = do
       resetFences ?device [fence]
       replicateM_ (fromIntegral enqueuesPerStep - 1) $ queueSubmit ?computeQueue submitInfo NULL_HANDLE
       queueSubmit ?computeQueue submitInfo fence
-      _ <- (race `on` readMVar) ?continueCompute ?killCompute
+      (race_ `on` readMVar) ?continueCompute ?killCompute
       unlessM (isJust <$> tryTakeMVar ?killCompute) $ go submitInfo (swap fences)
 
 drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecreateSwapchain
