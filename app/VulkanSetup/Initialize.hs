@@ -23,7 +23,7 @@ import Data.List (nub)
 import Foreign (malloc, nullPtr, Storable (peek, sizeOf), copyBytes, castPtr)
 import Foreign.Storable.Tuple ()
 import Control.Lens.Combinators (ifind)
-import Data.Vector.Storable.Sized qualified as Sized
+import Data.Vector.Storable.Sized qualified as SizedS
 import Data.Tuple.Extra (dupe, both)
 import GHC.TypeNats (KnownNat)
 
@@ -334,8 +334,8 @@ initVertexBuffer = do
 
   liftIO $ withMappedMemory ?device stagingMemory 0 ?vertexBufferInfo.size zero bracket \target -> do
     MkVertexData vertexData <- pure ?vertexData
-    VS.unsafeWith (Sized.SomeSized vertexData) \(castPtr -> source) ->
-      copyBytes target source $ Sized.length vertexData * sizeOf (VS.head $ Sized.SomeSized vertexData)
+    VS.unsafeWith (SizedS.SomeSized vertexData) \(castPtr -> source) ->
+      copyBytes target source $ SizedS.length vertexData * sizeOf (VS.head $ SizedS.SomeSized vertexData)
 
   let vertBufProps = MEMORY_PROPERTY_DEVICE_LOCAL_BIT
   ((_, vertexBuffer), _) <- constructBuffer ?vertexBufferInfo vertBufProps
@@ -417,9 +417,9 @@ initComputeFences = do
 
 initSyncs :: (HasLogger, HasDevice) => ResIO (Dict HasSyncs)
 initSyncs = do
-  (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
+  (imageAvailable, renderFinished) <- bisequence . dupe . SizedS.replicateM $
     snd <$> withSemaphore ?device zero Nothing allocate
-  inFlight <- Sized.replicateM $
+  inFlight <- SizedS.replicateM $
     snd <$> withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate
   let ?imageAvailable = imageAvailable
       ?renderFinished = renderFinished

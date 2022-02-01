@@ -7,21 +7,64 @@ import qualified RIO.Vector as V
 import qualified RIO.Vector.Partial as V -- TODO get rid of this import
 
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, ResIO)
-import qualified Data.Vector.Storable.Sized as Sized
+import qualified Data.Vector.Sized as Sized
 import GHC.TypeNats (KnownNat)
 import Foreign.Storable.Tuple ()
 
-import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
-                     , IOSSurfaceCreateInfoMVK(view)
-                     , Display
-                     , WaylandSurfaceCreateInfoKHR(display)
-                     , DisplayPropertiesKHR(display)
-                     )
+import Vulkan
+    ( withCommandBuffers,
+      allocateDescriptorSets,
+      updateDescriptorSets,
+      withDescriptorPool,
+      withComputePipelines,
+      withPipelineLayout,
+      deviceWaitIdle,
+      BufferCreateInfo(size),
+      CommandBufferAllocateInfo(commandBufferCount, commandPool, level),
+      DescriptorBufferInfo(range, buffer, offset),
+      DescriptorPoolCreateInfo(maxSets, poolSizes),
+      DescriptorPoolSize(type', descriptorCount),
+      DescriptorSetAllocateInfo(setLayouts, descriptorPool),
+      DescriptorSetLayoutBinding(descriptorCount, descriptorType),
+      DescriptorSetLayoutCreateInfo(bindings),
+      WriteDescriptorSet(descriptorCount, bufferInfo, dstSet, dstBinding,
+                         dstArrayElement, descriptorType),
+      CommandBufferLevel(COMMAND_BUFFER_LEVEL_PRIMARY),
+      DescriptorType(DESCRIPTOR_TYPE_UNIFORM_BUFFER),
+      ShaderStageFlagBits(SHADER_STAGE_COMPUTE_BIT),
+      CommandBuffer,
+      DescriptorSet,
+      Pipeline,
+      PipelineLayout,
+      ComputePipelineCreateInfo(layout, stage),
+      PipelineShaderStageCreateInfo(name, stage, module'),
+      PipelineLayoutCreateInfo(setLayouts) )
 import Vulkan.Zero
 import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 
 import Utils
 import VulkanSetup.Types
+    ( HasVulkanResources,
+      HasComputeStorageBuffer,
+      HasComputeUniformBuffer,
+      HasVulkanConfig,
+      HasComputeUniformBufferSize,
+      HasVertexBufferInfo,
+      HasComputeDescriptorSetLayoutInfo,
+      HasComputeShaderPaths,
+      ComputeShaderCount,
+      HasComputeMutables,
+      HasComputeDescriptorSetLayouts,
+      HasComputeCommandPool,
+      HasDevice,
+      HasLogger,
+      ComputeMutables(..),
+      AppException(VkWrongNumberOfComputePipelines,
+                   VkWrongNumberOfCommandBuffers),
+      Dict(..),
+      mkMResources,
+      writeRes,
+      HasComputePipelineLayoutInfos )
 import VulkanSetup.Utils
 
 initComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
@@ -40,12 +83,13 @@ constructComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
                              KnownNat ComputeShaderCount)
                           => ResIO ([ReleaseKey], ComputeMutables)
 constructComputeMutables = do
-  (layoutKey    , pipelineLayout ) <- constructComputePipelineLayout
-  (pipelineKey  , pipelines      ) <- constructComputePipelines pipelineLayout
+  (layoutKeys   , pipelineLayouts) <- constructComputePipelineLayouts
+  (pipelineKey  , pipelineVec    ) <- constructComputePipelines pipelineLayouts
   (dsKey        , descriptorSets ) <- constructDescriptorSets
   (cmdBufKey    , commandBuffer  ) <- constructCommandBuffer
+  let pipelines = Sized.zip pipelineLayouts pipelineVec
 
-  pure ([layoutKey, pipelineKey, dsKey, cmdBufKey], MkComputeMutables{..})
+  pure (layoutKeys <> [pipelineKey, dsKey, cmdBufKey], MkComputeMutables{..})
 
 constructCommandBuffer :: (HasDevice, HasComputeCommandPool)
                        => ResIO (ReleaseKey, CommandBuffer)
@@ -98,20 +142,21 @@ constructDescriptorSets = do
   updateDescriptorSets ?device descriptorWrites []
   pure (poolKey, descriptorSets)
 
-constructComputePipelineLayout :: (HasDevice, HasComputeDescriptorSetLayouts,
-                                   HasComputePipelineLayoutInfo)
-                                => ResIO (ReleaseKey, PipelineLayout)
-constructComputePipelineLayout = withPipelineLayout
-  ?device ?computePipelineLayoutInfo{setLayouts = ?computeDescriptorSetLayouts} Nothing allocate
+constructComputePipelineLayouts :: (HasDevice, HasComputeDescriptorSetLayouts,
+                                    HasComputePipelineLayoutInfos)
+                                 => ResIO ([ReleaseKey], Sized.Vector ComputeShaderCount PipelineLayout)
+constructComputePipelineLayouts = first toList . Sized.unzip <$>
+  for ?computePipelineLayoutInfos \layoutInfo -> withPipelineLayout
+            ?device layoutInfo{setLayouts = ?computeDescriptorSetLayouts} Nothing allocate
 
 constructComputePipelines :: (HasLogger, HasDevice, HasComputeShaderPaths, KnownNat ComputeShaderCount)
-                          => PipelineLayout
+                          => Sized.Vector ComputeShaderCount PipelineLayout
                           -> ResIO (ReleaseKey, Sized.Vector ComputeShaderCount Pipeline)
-constructComputePipelines layout = do
+constructComputePipelines layouts = do
   (releasePipelines, (_, pipelineList)) <-
-    withShaders (toList ?computeShaderPaths) \modules -> do
+    withShaders ?computeShaderPaths \modules -> do
 
-      let pipelineInfos = V.fromList $ modules <&> \module' ->
+      let pipelineInfos = Sized.fromSized $ Sized.zip modules layouts <&> \(module', layout) ->
             SomeStruct zero{ stage = SomeStruct zero{ stage = SHADER_STAGE_COMPUTE_BIT
                                                     , module'
                                                     , name = "main"

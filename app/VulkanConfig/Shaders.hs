@@ -8,7 +8,7 @@ module VulkanConfig.Shaders where
 
 import GHC.Records
 import Data.Function
-import Data.Vector.Sized qualified as Sized
+import Data.Vector.Sized qualified as SizedS
 
 import FIR
 import FIR.Syntax.Labels
@@ -166,7 +166,7 @@ shaderPaths :: Dict HasShaderPaths
 shaderPaths = Dict
   where ?vertexShaderPath = vertexShaderPath
         ?fragmentShaderPath = fragmentShaderPath
-        ?computeShaderPaths = Sized.fromTuple (updatePosPath, updateAccPath)
+        ?computeShaderPaths = SizedS.fromTuple (updatePosPath, updateAccPath)
 
 compileAllShaders :: IO ()
 compileAllShaders = sequence_

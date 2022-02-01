@@ -4,11 +4,13 @@
 module VulkanConfig.Pipeline where
 
 import RIO hiding (logInfo, logWarn, logError, logDebug)
-import Data.Vector.Storable.Sized qualified as Sized
+import Data.Vector.Storable.Sized qualified as SizedS
+import Data.Vector.Sized qualified as Sized
 
 import Foreign.Storable.Tuple ()
 import Foreign (sizeOf, (.|.))
 import GHC.Exts (proxy#)
+import GHC.TypeNats (KnownNat)
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
                      , IOSSurfaceCreateInfoMVK(view)
@@ -29,7 +31,7 @@ type Size0 = 2
 type Size1 = 3
 
 numVertices, numVertexEntries, floatSize, vertexSize, offset0, offset1 :: Word32
-numVertices = fromIntegral $ Sized.length VulkanConfig.Pipeline.vertexData
+numVertices = fromIntegral $ SizedS.length VulkanConfig.Pipeline.vertexData
 numVertexEntries = integralNatVal @Size0 + integralNatVal @Size1
 floatSize = fromIntegral $ sizeOf (0 :: Float)
 vertexSize = floatSize * numVertexEntries
@@ -37,8 +39,8 @@ offset0 = 0
 offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 
 -- 2D position, RGB color
-vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Sized.Vector Size1 Float)
-vertexData = Sized.fromTuple
+vertexData :: SizedS.Vector NumVertices (SizedS.Vector Size0 Float, SizedS.Vector Size1 Float)
+vertexData = SizedS.fromTuple
   ( vertex ( 0.5, -0.9) ( 0.5,  0.7,  0.9)
   , vertex ( 0.1, -0.8) ( 0.5,  0.7,  0.9)
   , vertex (-0.2, -0.7) ( 0.5,  0.7,  0.9)
@@ -59,7 +61,7 @@ vertexData = Sized.fromTuple
   , vertex (-0.3,  0.8) ( 0.5,  0.7,  0.9)
   , vertex ( 0.4,  0.9) ( 0.5,  0.7,  0.9)
   )
-  where vertex (a, b) (c, d, e) = (Sized.fromTuple (a, b), Sized.fromTuple (c, d, e))
+  where vertex (a, b) (c, d, e) = (SizedS.fromTuple (a, b), SizedS.fromTuple (c, d, e))
 
 type GraphicsUboContents = ("time" ::: Float, "window width" ::: Int32, "window height" ::: Int32)
 type instance UboInput Graphics = ("window width" ::: Int32, "window height" ::: Int32)
@@ -85,11 +87,11 @@ setupComputeCommands = do
                             , dstAccessMask = ACCESS_SHADER_READ_BIT
                             } :: MemoryBarrier
         stageMask = PIPELINE_STAGE_TRANSFER_BIT .|. PIPELINE_STAGE_COMPUTE_SHADER_BIT
-    for_ (Sized.toList mutables.pipelines) \pipeline -> do
+    for_ (Sized.toList mutables.pipelines) \(layout, pipeline) -> do
       cmdPipelineBarrier mutables.commandBuffer stageMask stageMask zero [memoryBarrier] [] []
       cmdBindPipeline mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE pipeline
       cmdBindDescriptorSets mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE
-                            mutables.pipelineLayout 0 mutables.descriptorSets []
+                            layout 0 mutables.descriptorSets []
       cmdDispatch mutables.commandBuffer 1 1 1
 
   logDebug "Set up compute commands"
@@ -117,8 +119,9 @@ setupGraphicsCommands = do
 graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
 graphicsPipelineLayoutInfo = zero
 
-computePipelineLayoutInfo :: PipelineLayoutCreateInfo
-computePipelineLayoutInfo = zero
+computePipelineLayoutInfos :: KnownNat ComputeShaderCount
+                           => Sized.Vector ComputeShaderCount PipelineLayoutCreateInfo
+computePipelineLayoutInfos = Sized.replicate zero
 
 vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
 vertexInputInfo = SomeStruct zero{vertexBindingDescriptions, vertexAttributeDescriptions}
@@ -176,17 +179,17 @@ computeDescriptorSetLayoutInfo = [ zero{bindings = uniformBindings}
                             }
                       ]
 
-vulkanConfig :: MonadIO m => m (Dict HasVulkanConfig)
+vulkanConfig :: (MonadIO m, KnownNat ComputeShaderCount) => m (Dict HasVulkanConfig)
 vulkanConfig = do
   graphicsUboData'@(MkUboData graphicsUboProxy _ _) <- graphicsUboData
   computeUboData'@(MkUboData computeUboProxy _ _) <- computeUboData
   let ?graphicsPipelineLayoutInfo = graphicsPipelineLayoutInfo
-      ?computePipelineLayoutInfo = computePipelineLayoutInfo
+      ?computePipelineLayoutInfos = computePipelineLayoutInfos
       ?vertexInputInfo = vertexInputInfo
       ?vertexBufferInfo = vertexBufferInfo
       ?vertexData = MkVertexData VulkanConfig.Pipeline.vertexData
       ?graphicsDescriptorSetLayoutInfo = graphicsDescriptorSetLayoutInfo
-      ?computeDescriptorSetLayoutInfo = computeDescriptorSetLayoutInfo
+      ?computeDescriptorSetLayoutInfo  = computeDescriptorSetLayoutInfo
       ?graphicsUniformBufferSize = fromIntegral $ sizeOfProxied graphicsUboProxy
       ?graphicsUboData = graphicsUboData'
       ?computeUniformBufferSize = fromIntegral $ sizeOfProxied computeUboProxy
