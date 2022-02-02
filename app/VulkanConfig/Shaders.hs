@@ -90,6 +90,10 @@ updatePos = Module $ entryPoint @"main" @Compute do
     assign @(Name "accel" :.: Ar :.: Ix :.: Swizzle "xy") gid acc'
     assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (Vec2 0 0)
 
+    -- speed visualization
+    speed <- let' $ norm vel'
+    assign @(Name "posit" :.: Ar :.: Ix :.: Swizzle "z") gid speed
+
 type UpdateAccLocalSize = 64
 
 updateAcc :: Module '[Ubo, Posit, Accel', Main (LocalSize UpdateAccLocalSize 1 1)]
@@ -183,7 +187,8 @@ vertex = shader do
     then Mat22 1 0 0 (1/((ubo.worldWidth / ubo.worldHeight) * (floatHeight / floatWidth)))
     else Mat22 (1/((ubo.worldHeight / ubo.worldWidth) * (floatWidth / floatHeight))) 0 0 1
   #gl_Position .= (scaleWin !*! scaleWorld) !*^ pos <!> Vec2 0 1
-  #vertColor .= Vec4 0.5 0.5 0.5 0.9
+  speed <- let' $ log (position.z * 30)
+  #vertColor .= Vec4 speed 0.5 0.5 0.9
   -- 3.76 is the diameter of Argon in Angstrom
   #gl_PointSize .= 3.76 / angstromPerPixel
 

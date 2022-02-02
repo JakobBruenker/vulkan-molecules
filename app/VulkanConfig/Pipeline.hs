@@ -27,8 +27,8 @@ import Utils
 
 -- in Angstrom
 worldWidth, worldHeight :: Float
-worldWidth = 1920
-worldHeight = 1080
+worldWidth = 1920 / 4
+worldHeight = 1080 / 4
 
 type SizeFloat = 4
 
@@ -113,90 +113,90 @@ vertexData = Partial.fromJust $ Sized.fromList
   , vertex (480,  65) 0
   , vertex (480,  85) 0
   , vertex (480, 105) 0
-  , vertex (500,   5) 0
-  , vertex (500,  25) 0
-  , vertex (500,  45) 0
-  , vertex (500,  65) 0
-  , vertex (500,  85) 0
-  , vertex (500, 105) 0
-  , vertex (510,   5) 0
-  , vertex (510,  25) 0
-  , vertex (510,  45) 0
-  , vertex (510,  65) 0
-  , vertex (510,  85) 0
-  , vertex (510, 105) 0
-  , vertex (520,   5) 0
-  , vertex (520,  25) 0
-  , vertex (520,  45) 0
-  , vertex (520,  65) 0
-  , vertex (520,  85) 0
-  , vertex (520, 105) 0
-  , vertex (540,   5) 0
-  , vertex (540,  25) 0
-  , vertex (540,  45) 0
-  , vertex (540,  65) 0
-  , vertex (540,  85) 0
-  , vertex (540, 105) 0
-  , vertex (560,   5) 0
-  , vertex (560,  25) 0
-  , vertex (560,  45) 0
-  , vertex (560,  65) 0
-  , vertex (560,  85) 0
-  , vertex (560, 105) 0
-  , vertex (580,   5) 0
-  , vertex (580,  25) 0
-  , vertex (580,  45) 0
-  , vertex (580,  65) 0
-  , vertex (580,  85) 0
-  , vertex (580, 105) 0
-  , vertex (600,   5) 0
-  , vertex (600,  25) 0
-  , vertex (600,  45) 0
-  , vertex (600,  65) 0
-  , vertex (600,  85) 0
-  , vertex (600, 105) 0
-  , vertex (620,   5) 0
-  , vertex (620,  25) 0
-  , vertex (620,  45) 0
-  , vertex (620,  65) 0
-  , vertex (620,  85) 0
-  , vertex (620, 105) 0
-  , vertex (720,   5) 0
-  , vertex (720,  25) 0
-  , vertex (720,  45) 0
-  , vertex (720,  65) 0
-  , vertex (720,  85) 0
-  , vertex (720, 105) 0
-  , vertex (740,   5) 0
-  , vertex (740,  25) 0
-  , vertex (740,  45) 0
-  , vertex (740,  65) 0
-  , vertex (740,  85) 0
-  , vertex (740, 105) 0
-  , vertex (760,   5) 0
-  , vertex (760,  25) 0
-  , vertex (760,  45) 0
-  , vertex (760,  65) 0
-  , vertex (760,  85) 0
-  , vertex (760, 105) 0
-  , vertex (780,   5) 0
-  , vertex (780,  25) 0
-  , vertex (780,  45) 0
-  , vertex (780,  65) 0
-  , vertex (780,  85) 0
-  , vertex (780, 105) 0
-  , vertex (800,   5) 0
-  , vertex (800,  25) 0
-  , vertex (800,  45) 0
-  , vertex (800,  65) 0
-  , vertex (800,  85) 0
-  , vertex (800, 105) 0
-  , vertex (820,   5) 0
-  , vertex (820,  25) 0
-  , vertex (820,  45) 0
-  , vertex (820,  65) 0
-  , vertex (820,  85) 0
-  , vertex (820, 105) 0
+  , vertex (100, 115) 0
+  , vertex (100, 125) 0
+  , vertex (100, 145) 0
+  , vertex (100, 165) 0
+  , vertex (100, 185) 0
+  , vertex (100, 205) 0
+  , vertex (110, 115) 0
+  , vertex (110, 125) 0
+  , vertex (110, 145) 0
+  , vertex (110, 165) 0
+  , vertex (110, 185) 0
+  , vertex (110, 205) 0
+  , vertex (120, 115) 0
+  , vertex (120, 125) 0
+  , vertex (120, 145) 0
+  , vertex (120, 165) 0
+  , vertex (120, 185) 0
+  , vertex (120, 205) 0
+  , vertex (140, 115) 0
+  , vertex (140, 125) 0
+  , vertex (140, 145) 0
+  , vertex (140, 165) 0
+  , vertex (140, 185) 0
+  , vertex (140, 205) 0
+  , vertex (160, 115) 0
+  , vertex (160, 125) 0
+  , vertex (160, 145) 0
+  , vertex (160, 165) 0
+  , vertex (160, 185) 0
+  , vertex (160, 205) 0
+  , vertex (180, 115) 0
+  , vertex (180, 125) 0
+  , vertex (180, 145) 0
+  , vertex (180, 165) 0
+  , vertex (180, 185) 0
+  , vertex (180, 205) 0
+  , vertex (200, 115) 0
+  , vertex (200, 125) 0
+  , vertex (200, 145) 0
+  , vertex (200, 165) 0
+  , vertex (200, 185) 0
+  , vertex (200, 205) 0
+  , vertex (220, 115) 0
+  , vertex (220, 125) 0
+  , vertex (220, 145) 0
+  , vertex (220, 165) 0
+  , vertex (220, 185) 0
+  , vertex (220, 205) 0
+  , vertex (320, 115) 0
+  , vertex (320, 125) 0
+  , vertex (320, 145) 0
+  , vertex (320, 165) 0
+  , vertex (320, 185) 0
+  , vertex (320, 205) 0
+  , vertex (340, 115) 0
+  , vertex (340, 125) 0
+  , vertex (340, 145) 0
+  , vertex (340, 165) 0
+  , vertex (340, 185) 0
+  , vertex (340, 205) 0
+  , vertex (360, 115) 0
+  , vertex (360, 125) 0
+  , vertex (360, 145) 0
+  , vertex (360, 165) 0
+  , vertex (360, 185) 0
+  , vertex (360, 205) 0
+  , vertex (380, 115) 0
+  , vertex (380, 125) 0
+  , vertex (380, 145) 0
+  , vertex (380, 165) 0
+  , vertex (380, 185) 0
+  , vertex (380, 205) 0
+  , vertex (450, 115) 0
+  , vertex (450, 125) 0
+  , vertex (450, 145) 0
+  , vertex (450, 165) 0
+  , vertex (450, 185) 0
+  , vertex (450, 205) 0
+  , vertex (470, 115) 0
+  , vertex (470, 125) 0
+  , vertex (470, 145) 0
+  , vertex (470, 165) 0
+  , vertex (470, 185) 0
+  , vertex (470, 205) 0
   ]
   where
     vertex (a, b) c = (Sized.fromTuple (a, b, 0), useBits @Word32 c)
@@ -277,12 +277,12 @@ vertexInputInfo = SomeStruct zero{vertexBindingDescriptions, vertexAttributeDesc
                                 ]
     vertexAttributeDescriptions = [ zero { binding = 0
                                          , location = 0
-                                         , format = FORMAT_R32G32_SFLOAT
+                                         , format = FORMAT_R32G32B32_SFLOAT
                                          , offset = offset0
                                          } :: VertexInputAttributeDescription
                                   , zero { binding = 0
                                          , location = 1
-                                         , format = FORMAT_R32G32B32_SFLOAT
+                                         , format = FORMAT_R32_SFLOAT
                                          , offset = offset1
                                          } :: VertexInputAttributeDescription
                                   ]
