@@ -159,8 +159,8 @@ type GraphicsUniformInput = Struct
    ]
 
 type VertexDefs =
-  '[ "position"  ':-> Input      '[Location 0                ] (V 2 Float)
-   , "color"     ':-> Input      '[Location 1                ] (V 2 Float)
+  '[ "position"  ':-> Input      '[Location 0                ] (V 3 Float)
+   , "type"      ':-> Input      '[Location 1                ] Word32
    , "vertColor" ':-> Output     '[Location 0                ] (V 4 Float)
    , "ubo"       ':-> Uniform    '[DescriptorSet 0, Binding 0] GraphicsUniformInput
    , "main"      ':-> EntryPoint '[                          ] Vertex
@@ -171,21 +171,21 @@ vertex = shader do
   ubo <- #ubo
   floatWidth  <- let' $ fromIntegral ubo.windowWidth
   floatHeight <- let' $ fromIntegral ubo.windowHeight
-  -- which window dimensions is constraining the displayed size?
-  constraining <- let' if ubo.worldWidth / ubo.worldHeight > floatWidth / floatHeight
-                       then floatWidth * (ubo.worldHeight / ubo.worldWidth)
-                       else floatHeight
+  angstromPerPixel <- let' if ubo.worldWidth / ubo.worldHeight > floatWidth / floatHeight
+                            then ubo.worldWidth / floatWidth
+                            else ubo.worldHeight / floatHeight
 
-  position <- #position <<&>> (^-^ Vec2 (ubo.worldWidth / 2) (ubo.worldHeight / 2))
+  position <- #position
+  pos <- let' $ view @(Swizzle "xy") position ^-^ Vec2 (ubo.worldWidth / 2) (ubo.worldHeight / 2)
   scaleWorld :: Code (M 2 2 Float) <- let' $ Mat22 (2 / ubo.worldWidth) 0 0 (2 / ubo.worldHeight)
   scaleWin :: Code (M 2 2 Float) <- let'
     if ubo.worldWidth / ubo.worldHeight > floatWidth / floatHeight
     then Mat22 1 0 0 (1/((ubo.worldWidth / ubo.worldHeight) * (floatHeight / floatWidth)))
     else Mat22 (1/((ubo.worldHeight / ubo.worldWidth) * (floatWidth / floatHeight))) 0 0 1
-  #gl_Position .= (scaleWin !*! scaleWorld) !*^ position <!> Vec2 0 1
-  color <- #color
-  #vertColor .= Vec4 color.r color.g 0.5 0.9
-  #gl_PointSize .= 0.0376 * constraining
+  #gl_Position .= (scaleWin !*! scaleWorld) !*^ pos <!> Vec2 0 1
+  #vertColor .= Vec4 0.5 0.5 0.5 0.9
+  -- 3.76 is the diameter of Argon in Angstrom
+  #gl_PointSize .= 3.76 / angstromPerPixel
 
 type FragmentDefs =
   '[ "vertColor" ':-> Input      '[Location 0     ] (V 4 Float)

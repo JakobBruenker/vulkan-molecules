@@ -27,8 +27,8 @@ import Utils
 
 -- in Angstrom
 worldWidth, worldHeight :: Float
-worldWidth = 192
-worldHeight = 108
+worldWidth = 1920
+worldHeight = 1080
 
 type SizeFloat = 4
 
@@ -38,9 +38,9 @@ computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
 computeStorageData = Sized'.replicate . MkStorageData $
   Sized.replicate @(4 * SizeFloat * NumVertices) @Float 0
 
-type NumVertices = 36
-type Size0 = 2
-type Size1 = 2
+type NumVertices = 144
+type Size0 = 3
+type Size1 = 1
 
 numVertices, numVertexEntries, floatSize, vertexSize, offset0, offset1 :: Word32
 numVertices = fromIntegral $ Sized.length VulkanConfig.Pipeline.vertexData
@@ -51,46 +51,155 @@ offset0 = 0
 offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 
 -- 2D position, RGB color
-vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Sized.Vector Size1 Float)
+vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Float)
 vertexData = Partial.fromJust $ Sized.fromList
-  [ vertex ( 20,   5) (0.5, 0.5)
-  , vertex ( 20,  25) (0.5, 0.5)
-  , vertex ( 20,  45) (0.5, 0.5)
-  , vertex ( 20,  65) (0.5, 0.5)
-  , vertex ( 20,  85) (0.5, 0.5)
-  , vertex ( 20, 105) (0.5, 0.5)
-  , vertex ( 40,   5) (0.5, 0.5)
-  , vertex ( 40,  25) (0.5, 0.5)
-  , vertex ( 40,  45) (0.5, 0.5)
-  , vertex ( 40,  65) (0.5, 0.5)
-  , vertex ( 40,  85) (0.5, 0.5)
-  , vertex ( 40, 105) (0.5, 0.5)
-  , vertex ( 60,   5) (0.5, 0.5)
-  , vertex ( 60,  25) (0.5, 0.5)
-  , vertex ( 60,  45) (0.5, 0.5)
-  , vertex ( 60,  65) (0.5, 0.5)
-  , vertex ( 60,  85) (0.5, 0.5)
-  , vertex ( 60, 105) (0.5, 0.5)
-  , vertex ( 80,   5) (0.5, 0.5)
-  , vertex ( 80,  25) (0.5, 0.5)
-  , vertex ( 80,  45) (0.5, 0.5)
-  , vertex ( 80,  65) (0.5, 0.5)
-  , vertex ( 80,  85) (0.5, 0.5)
-  , vertex ( 80, 105) (0.5, 0.5)
-  , vertex (100,   5) (0.5, 0.5)
-  , vertex (100,  25) (0.5, 0.5)
-  , vertex (100,  45) (0.5, 0.5)
-  , vertex (100,  65) (0.5, 0.5)
-  , vertex (100,  85) (0.5, 0.5)
-  , vertex (100, 105) (0.5, 0.5)
-  , vertex (120,   5) (0.5, 0.5)
-  , vertex (120,  25) (0.5, 0.5)
-  , vertex (120,  45) (0.5, 0.5)
-  , vertex (120,  65) (0.5, 0.5)
-  , vertex (120,  85) (0.5, 0.5)
-  , vertex (120, 105) (0.5, 0.5)
+  [ vertex (220,   5) 0
+  , vertex (220,  25) 0
+  , vertex (220,  45) 0
+  , vertex (220,  65) 0
+  , vertex (220,  85) 0
+  , vertex (220, 105) 0
+  , vertex (240,   5) 0
+  , vertex (240,  25) 0
+  , vertex (240,  45) 0
+  , vertex (240,  65) 0
+  , vertex (240,  85) 0
+  , vertex (240, 105) 0
+  , vertex (260,   5) 0
+  , vertex (260,  25) 0
+  , vertex (260,  45) 0
+  , vertex (260,  65) 0
+  , vertex (260,  85) 0
+  , vertex (260, 105) 0
+  , vertex (280,   5) 0
+  , vertex (280,  25) 0
+  , vertex (280,  45) 0
+  , vertex (280,  65) 0
+  , vertex (280,  85) 0
+  , vertex (280, 105) 0
+  , vertex (300,   5) 0
+  , vertex (300,  25) 0
+  , vertex (300,  45) 0
+  , vertex (300,  65) 0
+  , vertex (300,  85) 0
+  , vertex (300, 105) 0
+  , vertex (320,   5) 0
+  , vertex (320,  25) 0
+  , vertex (320,  45) 0
+  , vertex (320,  65) 0
+  , vertex (320,  85) 0
+  , vertex (320, 105) 0
+  , vertex (420,   5) 0
+  , vertex (420,  25) 0
+  , vertex (420,  45) 0
+  , vertex (420,  65) 0
+  , vertex (420,  85) 0
+  , vertex (420, 105) 0
+  , vertex (440,   5) 0
+  , vertex (440,  25) 0
+  , vertex (440,  45) 0
+  , vertex (440,  65) 0
+  , vertex (440,  85) 0
+  , vertex (440, 105) 0
+  , vertex (460,   5) 0
+  , vertex (460,  25) 0
+  , vertex (460,  45) 0
+  , vertex (460,  65) 0
+  , vertex (460,  85) 0
+  , vertex (460, 105) 0
+  , vertex (480,   5) 0
+  , vertex (480,  25) 0
+  , vertex (480,  45) 0
+  , vertex (480,  65) 0
+  , vertex (480,  85) 0
+  , vertex (480, 105) 0
+  , vertex (500,   5) 0
+  , vertex (500,  25) 0
+  , vertex (500,  45) 0
+  , vertex (500,  65) 0
+  , vertex (500,  85) 0
+  , vertex (500, 105) 0
+  , vertex (510,   5) 0
+  , vertex (510,  25) 0
+  , vertex (510,  45) 0
+  , vertex (510,  65) 0
+  , vertex (510,  85) 0
+  , vertex (510, 105) 0
+  , vertex (520,   5) 0
+  , vertex (520,  25) 0
+  , vertex (520,  45) 0
+  , vertex (520,  65) 0
+  , vertex (520,  85) 0
+  , vertex (520, 105) 0
+  , vertex (540,   5) 0
+  , vertex (540,  25) 0
+  , vertex (540,  45) 0
+  , vertex (540,  65) 0
+  , vertex (540,  85) 0
+  , vertex (540, 105) 0
+  , vertex (560,   5) 0
+  , vertex (560,  25) 0
+  , vertex (560,  45) 0
+  , vertex (560,  65) 0
+  , vertex (560,  85) 0
+  , vertex (560, 105) 0
+  , vertex (580,   5) 0
+  , vertex (580,  25) 0
+  , vertex (580,  45) 0
+  , vertex (580,  65) 0
+  , vertex (580,  85) 0
+  , vertex (580, 105) 0
+  , vertex (600,   5) 0
+  , vertex (600,  25) 0
+  , vertex (600,  45) 0
+  , vertex (600,  65) 0
+  , vertex (600,  85) 0
+  , vertex (600, 105) 0
+  , vertex (620,   5) 0
+  , vertex (620,  25) 0
+  , vertex (620,  45) 0
+  , vertex (620,  65) 0
+  , vertex (620,  85) 0
+  , vertex (620, 105) 0
+  , vertex (720,   5) 0
+  , vertex (720,  25) 0
+  , vertex (720,  45) 0
+  , vertex (720,  65) 0
+  , vertex (720,  85) 0
+  , vertex (720, 105) 0
+  , vertex (740,   5) 0
+  , vertex (740,  25) 0
+  , vertex (740,  45) 0
+  , vertex (740,  65) 0
+  , vertex (740,  85) 0
+  , vertex (740, 105) 0
+  , vertex (760,   5) 0
+  , vertex (760,  25) 0
+  , vertex (760,  45) 0
+  , vertex (760,  65) 0
+  , vertex (760,  85) 0
+  , vertex (760, 105) 0
+  , vertex (780,   5) 0
+  , vertex (780,  25) 0
+  , vertex (780,  45) 0
+  , vertex (780,  65) 0
+  , vertex (780,  85) 0
+  , vertex (780, 105) 0
+  , vertex (800,   5) 0
+  , vertex (800,  25) 0
+  , vertex (800,  45) 0
+  , vertex (800,  65) 0
+  , vertex (800,  85) 0
+  , vertex (800, 105) 0
+  , vertex (820,   5) 0
+  , vertex (820,  25) 0
+  , vertex (820,  45) 0
+  , vertex (820,  65) 0
+  , vertex (820,  85) 0
+  , vertex (820, 105) 0
   ]
-  where vertex (a, b) (c, d) = (Sized.fromTuple (a, b), Sized.fromTuple (c, d))
+  where
+    vertex (a, b) c = (Sized.fromTuple (a, b, 0), useBits @Word32 c)
 
 type WorldSize = ("world width" ::: Float, "world height" ::: Float)
 
@@ -109,7 +218,7 @@ type instance UboInput Compute = ()
 
 computeUboData :: MonadIO m => m (UboData Compute)
 computeUboData = MkUboData proxy# (const id) <$>
-  newIORef @_ @ComputeUboContents (0.01, (worldWidth, worldHeight))
+  newIORef @_ @ComputeUboContents (0.1, (worldWidth, worldHeight))
 
 setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupComputeCommands = do
@@ -128,7 +237,7 @@ setupComputeCommands = do
       cmdPipelineBarrier mutables.commandBuffer stageMask stageMask zero [memoryBarrier] [] []
       cmdBindPipeline mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE pipeline
       -- TODO get the size by checking local size and number of particles
-      cmdDispatch mutables.commandBuffer 1 1 1
+      cmdDispatch mutables.commandBuffer 3 1 1
 
   logDebug "Set up compute commands"
 
