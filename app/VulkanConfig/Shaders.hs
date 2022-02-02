@@ -1,4 +1,5 @@
 {-# LANGUAGE RebindableSyntax #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE OverloadedRecordUpdate #-}
 
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
@@ -21,10 +22,23 @@ import VulkanSetup.Types
 import VulkanConfig.FIRUtils ()
 import VulkanConfig.Pipeline (numVertices)
 
+-- Boltzmann constant in eV*K^-1
+kB :: Float
+kB = 8.617333262145e-5
+
+jPereV :: Float
+jPereV = 1.602176634 -- * 10^-19, omitted
+
+avogadro :: Float
+avogadro = 6.02214076 -- * 10^23, omitted
+
 type instance ComputeShaderCount = 2
 
 type ComputeUniformInput = Struct
-  '[ "dt" ':-> Float ]
+  '[ "dt"          ':-> Float
+   , "worldWidth"  ':-> Float
+   , "worldHeight" ':-> Float
+   ]
 
 type UpdatePosLocalSize = 64
 
@@ -47,21 +61,28 @@ updatePos = Module $ entryPoint @"main" @Compute do
     ubo <- #ubo
     dt <- let' $ ubo.dt
 
-    pos  <- use @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") gid
+    pos  <- use @(Name "posit"  :.: Ar :.: Ix :.: Swizzle "xy") gid
     acc  <- use @(Name "accel"  :.: Ar :.: Ix :.: Swizzle "xy") gid
     acc' <- use @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid
     vel  <- use @(Name "veloc"  :.: Ar :.: Ix :.: Swizzle "xy") gid
     vel' <- let' $ vel ^+^ (dt * 0.5) *^ (acc ^+^ acc')
     -- friction
-    let f x = 0.95 * abs x
-    velx' <- let' $ if pos.x < -1 then f vel'.x else if pos.x > 1 then -(f vel'.x) else vel'.x
-    vely' <- let' $ if pos.y < -1 then f vel'.y else if pos.y > 1 then -(f vel'.y) else vel'.y
-    -- velx' <- let' $ if pos.x < -1 then abs vel'.x else if pos.x > 1 then -(abs vel'.x) else vel'.x
-    -- vely' <- let' $ if pos.y < -1 then abs vel'.y else if pos.y > 1 then -(abs vel'.y) else vel'.y
-    -- vel'' <- let' $ Vec2 if pos.x < -1 then abs vel'.x else if pos.x > 1 then -(abs vel'.x) else vel'.x
-    --                      if pos.y < -1 then abs vel'.y else if pos.y > 1 then -(abs vel'.y) else vel'.y
-    -- assign @(Name "veloc" :.: Ar :.: Ix :.: Swizzle "xy") gid vel'
+    let f v isMin = (if (if isMin then (<) else (>)) v 0 then 0.5 else 1) * abs v
+    r <- let' $ ubo.worldWidth
+    l <- let' 0
+    b <- let' $ ubo.worldHeight
+    t <- let' 0
+    velx' <- let' $ if pos.x < l
+                    then f vel'.x True
+                    else if pos.x > r then -(f vel'.x False) else vel'.x
+    vely' <- let' $ if pos.y < t
+                    then f vel'.y True
+                    else if pos.y > b then -(f vel'.y False) else vel'.y
     assign @(Name "veloc" :.: Ar :.: Ix :.: Swizzle "xy") gid (Vec2 velx' vely')
+
+    -- -- lazy friction
+    -- vel'' <- let' $ vel' ^* 0.999999
+    -- assign @(Name "veloc" :.: Ar :.: Ix :.: Swizzle "xy") gid vel''
 
     modifying @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") gid
       (^+^ (dt *^ vel' ^+^ (dt * dt * 0.5) *^ acc'))
@@ -69,47 +90,60 @@ updatePos = Module $ entryPoint @"main" @Compute do
     assign @(Name "accel" :.: Ar :.: Ix :.: Swizzle "xy") gid acc'
     assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (Vec2 0 0)
 
-
--- type UpdateAccLocalSize = 8
-
--- -- TODO: this is not really synced correctly when there are more vertices than local group size I think
--- updateAcc :: Module '[Posit, Accel', Main (LocalSize UpdateAccLocalSize UpdateAccLocalSize 1)]
--- updateAcc = Module $ entryPoint @"main" @Compute do
---   gid <- use @(Name "gl_GlobalInvocationID" :.: Swizzle "xy")
---   when (gid.x /= gid.y && gid.x < Lit numVertices && gid.y < Lit numVertices) do
---     pos  <- use @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") gid.x
---     other <- use @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") gid.y
---     s <- let' $ 0.04
---     e <- let' $ 0.1
---     r <- let' $ distance pos other
---     s6 <- let' $ s ** 6
---     r6 <- let' $ r ** 6
---     modifying @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid.x $
---       (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (other ^-^ pos))
-
 type UpdateAccLocalSize = 64
 
-updateAcc :: Module '[Posit, Accel', Main (LocalSize UpdateAccLocalSize 1 1)]
+updateAcc :: Module '[Ubo, Posit, Accel', Main (LocalSize UpdateAccLocalSize 1 1)]
 updateAcc = Module $ entryPoint @"main" @Compute do
+  -- ubo <- #ubo
   gid <- use @(Name "gl_GlobalInvocationID" :.: Swizzle "x")
   when (gid < Lit numVertices) $ locally do
     pos  <- use @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") gid
 
     #acc #= Vec2 0 0
     #i #= 0
+    s <- let' $ 3.4
+    s6 <- let' $ s ** 6
+    e <- let' $ 120 * Lit kB
     while (#i <<&>> (< Lit numVertices)) do
       i <- #i
       #i %= (+ 1)
       when (i /= gid) do
         other <- use @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") i
-        s <- let' $ 0.04
-        e <- let' $ 0.1
         r <- let' $ distance pos other
-        s6 <- let' $ s ** 6
         r6 <- let' $ r ** 6
         #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (other ^-^ pos))
 
-    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid =<< #acc
+    -- -- boundaries
+    -- do r <- let' $ pos.x + s / 2
+    --    r6 <- let' $ r ** 6
+    --    #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ Vec2 -1 0)
+    --    -- without attractive part
+    --    -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ Vec2 -1 0)
+
+    -- do r <- let' $ ubo.worldWidth - pos.x + s / 2
+    --    r6 <- let' $ r ** 6
+    --    #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ Vec2 1 0)
+    --    -- without attractive part
+    --    -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ Vec2 1 0)
+
+    -- do r <- let' $ pos.y + s / 2
+    --    r6 <- let' $ r ** 6
+    --    #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ Vec2 0 -1)
+    --    -- without attractive part
+    --    -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ Vec2 0 -1)
+
+    -- do r <- let' $ ubo.worldHeight - pos.y + s / 2
+    --    r6 <- let' $ r ** 6
+    --    #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ Vec2 0 1)
+    --    -- without attractive part
+    --    -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ Vec2 0 1)
+
+    -- mass in Daltons
+    m <- let' 40
+    -- apply unit conversion factors
+    convertedAcc <- #acc <<&>> (^/ (m * Lit jPereV * Lit avogadro * 1e-3))
+
+    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid convertedAcc
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -120,6 +154,8 @@ type GraphicsUniformInput = Struct
   '[ "time"         ':-> Float
    , "windowWidth"  ':-> Int32
    , "windowHeight" ':-> Int32
+   , "worldWidth"   ':-> Float
+   , "worldHeight"  ':-> Float
    ]
 
 type VertexDefs =
@@ -135,15 +171,21 @@ vertex = shader do
   ubo <- #ubo
   floatWidth  <- let' $ fromIntegral ubo.windowWidth
   floatHeight <- let' $ fromIntegral ubo.windowHeight
+  -- which window dimensions is constraining the displayed size?
+  constraining <- let' if ubo.worldWidth / ubo.worldHeight > floatWidth / floatHeight
+                       then floatWidth * (ubo.worldHeight / ubo.worldWidth)
+                       else floatHeight
 
-  position <- #position
-  scl :: Code (M 2 2 Float) <- let' if floatHeight < floatWidth
-                                    then Mat22 (floatHeight / floatWidth) 0 0 1
-                                    else Mat22 1 0 0 (floatWidth / floatHeight)
-  #gl_Position .= scl !*^ position <!> Vec2 0 1
+  position <- #position <<&>> (^-^ Vec2 (ubo.worldWidth / 2) (ubo.worldHeight / 2))
+  scaleWorld :: Code (M 2 2 Float) <- let' $ Mat22 (2 / ubo.worldWidth) 0 0 (2 / ubo.worldHeight)
+  scaleWin :: Code (M 2 2 Float) <- let'
+    if ubo.worldWidth / ubo.worldHeight > floatWidth / floatHeight
+    then Mat22 1 0 0 (1/((ubo.worldWidth / ubo.worldHeight) * (floatHeight / floatWidth)))
+    else Mat22 (1/((ubo.worldHeight / ubo.worldWidth) * (floatWidth / floatHeight))) 0 0 1
+  #gl_Position .= (scaleWin !*! scaleWorld) !*^ position <!> Vec2 0 1
   color <- #color
-  #vertColor .= Vec4 (color.r * ubo.time * 0.01) color.g 0.5 0.3
-  #gl_PointSize .= 25
+  #vertColor .= Vec4 color.r color.g 0.5 0.9
+  #gl_PointSize .= 0.0376 * constraining
 
 type FragmentDefs =
   '[ "vertColor" ':-> Input      '[Location 0     ] (V 4 Float)

@@ -6,6 +6,7 @@ module VulkanConfig.Pipeline where
 import RIO hiding (logInfo, logWarn, logError, logDebug)
 import Data.Vector.Storable.Sized qualified as Sized
 import Data.Vector.Sized qualified as Sized'
+import RIO.Partial qualified as Partial
 
 import Foreign.Storable.Tuple ()
 import Foreign (sizeOf, (.|.))
@@ -24,6 +25,11 @@ import Vulkan.CStruct.Extends
 import VulkanSetup.Types
 import Utils
 
+-- in Angstrom
+worldWidth, worldHeight :: Float
+worldWidth = 192
+worldHeight = 108
+
 type SizeFloat = 4
 
 type instance ComputeStorageBufferCount = 3
@@ -32,7 +38,7 @@ computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
 computeStorageData = Sized'.replicate . MkStorageData $
   Sized.replicate @(4 * SizeFloat * NumVertices) @Float 0
 
-type NumVertices = 19
+type NumVertices = 36
 type Size0 = 2
 type Size1 = 2
 
@@ -46,42 +52,64 @@ offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 
 -- 2D position, RGB color
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Sized.Vector Size1 Float)
-vertexData = Sized.fromTuple
-  ( vertex ( 0.5, -0.9) ( 0.5,  0.5)
-  , vertex ( 0.1, -0.8) ( 0.5,  0.5)
-  , vertex (-0.2, -0.7) ( 0.5,  0.5)
-  , vertex (-0.3, -0.6) ( 0.5,  0.5)
-  , vertex (-0.7, -0.5) ( 0.5,  0.5)
-  , vertex ( 0.6, -0.4) ( 0.5,  0.5)
-  , vertex (-0.2, -0.3) ( 0.5,  0.5)
-  , vertex ( 0.8, -0.2) ( 0.5,  0.5)
-  , vertex ( 0.1, -0.1) ( 0.5,  0.5)
-  , vertex (-0.9,  0  ) ( 0.5,  0.5)
-  , vertex (-0.5,  0.1) ( 0.5,  0.5)
-  , vertex ( 0.6,  0.2) ( 0.5,  0.5)
-  , vertex ( 0.7,  0.3) ( 0.5,  0.5)
-  , vertex (-0.1,  0.4) ( 0.5,  0.5)
-  , vertex ( 0.2,  0.5) ( 0.5,  0.5)
-  , vertex (-0.2,  0.6) ( 0.5,  0.5)
-  , vertex (-0.9,  0.7) ( 0.5,  0.5)
-  , vertex (-0.3,  0.8) ( 0.5,  0.5)
-  , vertex ( 0.4,  0.9) ( 0.5,  0.5)
-  )
+vertexData = Partial.fromJust $ Sized.fromList
+  [ vertex ( 20,   5) (0.5, 0.5)
+  , vertex ( 20,  25) (0.5, 0.5)
+  , vertex ( 20,  45) (0.5, 0.5)
+  , vertex ( 20,  65) (0.5, 0.5)
+  , vertex ( 20,  85) (0.5, 0.5)
+  , vertex ( 20, 105) (0.5, 0.5)
+  , vertex ( 40,   5) (0.5, 0.5)
+  , vertex ( 40,  25) (0.5, 0.5)
+  , vertex ( 40,  45) (0.5, 0.5)
+  , vertex ( 40,  65) (0.5, 0.5)
+  , vertex ( 40,  85) (0.5, 0.5)
+  , vertex ( 40, 105) (0.5, 0.5)
+  , vertex ( 60,   5) (0.5, 0.5)
+  , vertex ( 60,  25) (0.5, 0.5)
+  , vertex ( 60,  45) (0.5, 0.5)
+  , vertex ( 60,  65) (0.5, 0.5)
+  , vertex ( 60,  85) (0.5, 0.5)
+  , vertex ( 60, 105) (0.5, 0.5)
+  , vertex ( 80,   5) (0.5, 0.5)
+  , vertex ( 80,  25) (0.5, 0.5)
+  , vertex ( 80,  45) (0.5, 0.5)
+  , vertex ( 80,  65) (0.5, 0.5)
+  , vertex ( 80,  85) (0.5, 0.5)
+  , vertex ( 80, 105) (0.5, 0.5)
+  , vertex (100,   5) (0.5, 0.5)
+  , vertex (100,  25) (0.5, 0.5)
+  , vertex (100,  45) (0.5, 0.5)
+  , vertex (100,  65) (0.5, 0.5)
+  , vertex (100,  85) (0.5, 0.5)
+  , vertex (100, 105) (0.5, 0.5)
+  , vertex (120,   5) (0.5, 0.5)
+  , vertex (120,  25) (0.5, 0.5)
+  , vertex (120,  45) (0.5, 0.5)
+  , vertex (120,  65) (0.5, 0.5)
+  , vertex (120,  85) (0.5, 0.5)
+  , vertex (120, 105) (0.5, 0.5)
+  ]
   where vertex (a, b) (c, d) = (Sized.fromTuple (a, b), Sized.fromTuple (c, d))
 
-type GraphicsUboContents = ("time" ::: Float, "window width" ::: Int32, "window height" ::: Int32)
+type WorldSize = ("world width" ::: Float, "world height" ::: Float)
+
+type GraphicsUboContents = ("time" ::: Float,
+  ("window width" ::: Int32, "window height" ::: Int32),
+  WorldSize)
 type instance UboInput Graphics = ("window width" ::: Int32, "window height" ::: Int32)
 
 graphicsUboData :: MonadIO m => m (UboData Graphics)
-graphicsUboData = MkUboData proxy# (\(w, h) (i, _, _) -> (i + 1, w, h)) <$>
-  newIORef @_ @GraphicsUboContents (0, 0, 0)
+graphicsUboData = MkUboData proxy# (\(w, h) (i, (_, _), world) -> (i + 1, (w, h), world)) <$>
+  newIORef @_ @GraphicsUboContents (0, (0, 0), (worldWidth, worldHeight))
 
-type ComputeUboContents = ("dt" ::: Float)
+-- dt is in femtoseconds
+type ComputeUboContents = ("dt" ::: Float, WorldSize)
 type instance UboInput Compute = ()
 
 computeUboData :: MonadIO m => m (UboData Compute)
 computeUboData = MkUboData proxy# (const id) <$>
-  newIORef @_ @ComputeUboContents 0.0001
+  newIORef @_ @ComputeUboContents (0.01, (worldWidth, worldHeight))
 
 setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupComputeCommands = do
