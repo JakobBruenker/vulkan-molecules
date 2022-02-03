@@ -27,8 +27,8 @@ import Utils
 
 -- in Angstrom
 worldWidth, worldHeight :: Float
-worldWidth = 1920 / 4
-worldHeight = 1080 / 4
+worldWidth = 192
+worldHeight = 108
 
 type SizeFloat = 4
 
@@ -38,7 +38,7 @@ computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
 computeStorageData = Sized'.replicate . MkStorageData $
   Sized.replicate @(4 * SizeFloat * NumVertices) @Float 0
 
-type NumVertices = 144
+type NumVertices = 3
 type Size0 = 3
 type Size1 = 1
 
@@ -53,153 +53,12 @@ offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 -- 2D position, RGB color
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Float)
 vertexData = Partial.fromJust $ Sized.fromList
-  [ vertex (220,   5) 0
-  , vertex (220,  25) 0
-  , vertex (220,  45) 0
-  , vertex (220,  65) 0
-  , vertex (220,  85) 0
-  , vertex (220, 105) 0
-  , vertex (240,   5) 0
-  , vertex (240,  25) 0
-  , vertex (240,  45) 0
-  , vertex (240,  65) 0
-  , vertex (240,  85) 0
-  , vertex (240, 105) 0
-  , vertex (260,   5) 0
-  , vertex (260,  25) 0
-  , vertex (260,  45) 0
-  , vertex (260,  65) 0
-  , vertex (260,  85) 0
-  , vertex (260, 105) 0
-  , vertex (280,   5) 0
-  , vertex (280,  25) 0
-  , vertex (280,  45) 0
-  , vertex (280,  65) 0
-  , vertex (280,  85) 0
-  , vertex (280, 105) 0
-  , vertex (300,   5) 0
-  , vertex (300,  25) 0
-  , vertex (300,  45) 0
-  , vertex (300,  65) 0
-  , vertex (300,  85) 0
-  , vertex (300, 105) 0
-  , vertex (320,   5) 0
-  , vertex (320,  25) 0
-  , vertex (320,  45) 0
-  , vertex (320,  65) 0
-  , vertex (320,  85) 0
-  , vertex (320, 105) 0
-  , vertex (420,   5) 0
-  , vertex (420,  25) 0
-  , vertex (420,  45) 0
-  , vertex (420,  65) 0
-  , vertex (420,  85) 0
-  , vertex (420, 105) 0
-  , vertex (440,   5) 0
-  , vertex (440,  25) 0
-  , vertex (440,  45) 0
-  , vertex (440,  65) 0
-  , vertex (440,  85) 0
-  , vertex (440, 105) 0
-  , vertex (460,   5) 0
-  , vertex (460,  25) 0
-  , vertex (460,  45) 0
-  , vertex (460,  65) 0
-  , vertex (460,  85) 0
-  , vertex (460, 105) 0
-  , vertex (480,   5) 0
-  , vertex (480,  25) 0
-  , vertex (480,  45) 0
-  , vertex (480,  65) 0
-  , vertex (480,  85) 0
-  , vertex (480, 105) 0
-  , vertex (100, 115) 0
-  , vertex (100, 125) 0
-  , vertex (100, 145) 0
-  , vertex (100, 165) 0
-  , vertex (100, 185) 0
-  , vertex (100, 205) 0
-  , vertex (110, 115) 0
-  , vertex (110, 125) 0
-  , vertex (110, 145) 0
-  , vertex (110, 165) 0
-  , vertex (110, 185) 0
-  , vertex (110, 205) 0
-  , vertex (120, 115) 0
-  , vertex (120, 125) 0
-  , vertex (120, 145) 0
-  , vertex (120, 165) 0
-  , vertex (120, 185) 0
-  , vertex (120, 205) 0
-  , vertex (140, 115) 0
-  , vertex (140, 125) 0
-  , vertex (140, 145) 0
-  , vertex (140, 165) 0
-  , vertex (140, 185) 0
-  , vertex (140, 205) 0
-  , vertex (160, 115) 0
-  , vertex (160, 125) 0
-  , vertex (160, 145) 0
-  , vertex (160, 165) 0
-  , vertex (160, 185) 0
-  , vertex (160, 205) 0
-  , vertex (180, 115) 0
-  , vertex (180, 125) 0
-  , vertex (180, 145) 0
-  , vertex (180, 165) 0
-  , vertex (180, 185) 0
-  , vertex (180, 205) 0
-  , vertex (200, 115) 0
-  , vertex (200, 125) 0
-  , vertex (200, 145) 0
-  , vertex (200, 165) 0
-  , vertex (200, 185) 0
-  , vertex (200, 205) 0
-  , vertex (220, 115) 0
-  , vertex (220, 125) 0
-  , vertex (220, 145) 0
-  , vertex (220, 165) 0
-  , vertex (220, 185) 0
-  , vertex (220, 205) 0
-  , vertex (320, 115) 0
-  , vertex (320, 125) 0
-  , vertex (320, 145) 0
-  , vertex (320, 165) 0
-  , vertex (320, 185) 0
-  , vertex (320, 205) 0
-  , vertex (340, 115) 0
-  , vertex (340, 125) 0
-  , vertex (340, 145) 0
-  , vertex (340, 165) 0
-  , vertex (340, 185) 0
-  , vertex (340, 205) 0
-  , vertex (360, 115) 0
-  , vertex (360, 125) 0
-  , vertex (360, 145) 0
-  , vertex (360, 165) 0
-  , vertex (360, 185) 0
-  , vertex (360, 205) 0
-  , vertex (380, 115) 0
-  , vertex (380, 125) 0
-  , vertex (380, 145) 0
-  , vertex (380, 165) 0
-  , vertex (380, 185) 0
-  , vertex (380, 205) 0
-  , vertex (450, 115) 0
-  , vertex (450, 125) 0
-  , vertex (450, 145) 0
-  , vertex (450, 165) 0
-  , vertex (450, 185) 0
-  , vertex (450, 205) 0
-  , vertex (470, 115) 0
-  , vertex (470, 125) 0
-  , vertex (470, 145) 0
-  , vertex (470, 165) 0
-  , vertex (470, 185) 0
-  , vertex (470, 205) 0
+  [ vertex ( 64, 54) 1
+  , vertex (128, 54) 1
+  , vertex ( 96, 20) 0
   ]
   where
-    vertex (a, b) c = (Sized.fromTuple (a, b, 0), useBits @Word32 c)
+    vertex (a, b) c = (Sized.fromTuple (a, b, 0), c)
 
 type WorldSize = ("world width" ::: Float, "world height" ::: Float)
 
@@ -218,7 +77,7 @@ type instance UboInput Compute = ()
 
 computeUboData :: MonadIO m => m (UboData Compute)
 computeUboData = MkUboData proxy# (const id) <$>
-  newIORef @_ @ComputeUboContents (0.1, (worldWidth, worldHeight))
+  newIORef @_ @ComputeUboContents (0.00001, (worldWidth, worldHeight))
 
 setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupComputeCommands = do
@@ -237,7 +96,8 @@ setupComputeCommands = do
       cmdPipelineBarrier mutables.commandBuffer stageMask stageMask zero [memoryBarrier] [] []
       cmdBindPipeline mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE pipeline
       -- TODO get the size by checking local size and number of particles
-      cmdDispatch mutables.commandBuffer 3 1 1
+      let groups = fromIntegral $ -(-(fromIntegral numVertices :: Int) `div` 64)
+      cmdDispatch mutables.commandBuffer groups 1 1
 
   logDebug "Set up compute commands"
 

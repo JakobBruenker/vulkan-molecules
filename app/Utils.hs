@@ -10,11 +10,8 @@ import RIO
 import GHC.TypeNats (KnownNat, natVal')
 import GHC.Exts (proxy#, Proxy#)
 import Foreign.Storable (sizeOf)
-import Unsafe.Coerce (unsafeCoerce)
 
 import VulkanSetup.Types
-
-import Data.Kind (Type)
 
 logDebug :: HasCallStack => (HasLogger, MonadIO m) => Utf8Builder -> m ()
 logDebug = flip runReaderT ?logFunc . RIO.logDebug
@@ -33,11 +30,3 @@ integralNatVal = fromIntegral $ natVal' (proxy# @n)
 
 sizeOfProxied :: forall a . Storable a => Proxy# a -> Int
 sizeOfProxied _ = sizeOf (error "evaluated sizeOf argument" :: a)
-
-type Size :: Type -> Natural
-type family Size t
-type instance Size Float = 32
-type instance Size Word32 = 32
-
-useBits :: Size a ~ Size b => a -> b
-useBits = unsafeCoerce -- :)

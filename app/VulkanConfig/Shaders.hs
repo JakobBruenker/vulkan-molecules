@@ -32,6 +32,10 @@ jPereV = 1.602176634 -- * 10^-19, omitted
 avogadro :: Float
 avogadro = 6.02214076 -- * 10^23, omitted
 
+-- Coulomb's constant in eV angstrom / e^2
+coulomb :: Float
+coulomb = 14.3996
+
 type instance ComputeShaderCount = 2
 
 type ComputeUniformInput = Struct
@@ -90,64 +94,73 @@ updatePos = Module $ entryPoint @"main" @Compute do
     assign @(Name "accel" :.: Ar :.: Ix :.: Swizzle "xy") gid acc'
     assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (Vec2 0 0)
 
-    -- speed visualization
-    speed <- let' $ norm vel'
-    assign @(Name "posit" :.: Ar :.: Ix :.: Swizzle "z") gid speed
-
 type UpdateAccLocalSize = 64
+
+mass, charge, radius :: Code Float -> Code Float
+mass atomType = if atomType == 0 then 5.486e-4 else if atomType == 1 then 1.007276466622 else 0
+charge atomType = if atomType == 0 then -1 else if atomType == 1 then 1 else 0
+radius atomType = if atomType == 0 then 0.1 else if atomType == 1 then 1 else 1
+
+atomColor :: Code Float -> Code (V 3 Float)
+atomColor atomType =
+  if atomType == 0 then Vec3 0 0.3 0.6 else if atomType == 1 then Vec3 0.6 0 0 else Vec3 1 1 1
 
 updateAcc :: Module '[Ubo, Posit, Accel', Main (LocalSize UpdateAccLocalSize 1 1)]
 updateAcc = Module $ entryPoint @"main" @Compute do
   -- ubo <- #ubo
   gid <- use @(Name "gl_GlobalInvocationID" :.: Swizzle "x")
   when (gid < Lit numVertices) $ locally do
-    pos  <- use @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") gid
+    position <- use @(Name "posit" :.: Ar :.: Ix) gid
+    pos <- let' $ view @(Swizzle "xy") position
+    atomType <- let' $ position.w
+
+    -- mass in Daltons
+    m <- let' $ mass atomType
 
     #acc #= Vec2 0 0
+
+    -- -- lennard jones
+    -- #i #= 0
+    -- s <- let' $ 3.4
+    -- s6 <- let' $ s ** 6
+    -- e <- let' $ 120 * Lit kB
+
+    -- while (#i <<&>> (< Lit numVertices)) do
+    --   i <- #i
+    --   #i %= (+ 1)
+    --   when (i /= gid) do
+    --     other <- use @(Name "posit" :.: Ar :.: Ix) i
+    --     otherPos <- let' $ view @(Swizzle "xy") other
+    --     r <- let' $ distance pos otherPos
+    --     r6 <- let' $ r ** 6
+    --     #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
+
+    -- -- apply unit conversion factors
+    -- forceLJ <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
+
+    -- electric
     #i #= 0
-    s <- let' $ 3.4
-    s6 <- let' $ s ** 6
-    e <- let' $ 120 * Lit kB
+
+    q <- let' $ charge atomType
+
     while (#i <<&>> (< Lit numVertices)) do
       i <- #i
       #i %= (+ 1)
       when (i /= gid) do
-        other <- use @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") i
-        r <- let' $ distance pos other
-        r6 <- let' $ r ** 6
-        #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (other ^-^ pos))
+        other <- use @(Name "posit" :.: Ar :.: Ix) i
+        otherPos <- let' $ view @(Swizzle "xy") other
+        otherQ <- let' $ charge other.w
+        r <- let' $ distance pos otherPos
+        r2 <- let' $ r * r
+        -- #acc %= (^+^ (Lit coulomb * q * otherQ / r2) *^ normalise (otherPos ^-^ pos))
+        #acc %= (^+^ -(Lit coulomb * q * otherQ / r2) *^ normalise (otherPos ^-^ pos))
 
-    -- -- boundaries
-    -- do r <- let' $ pos.x + s / 2
-    --    r6 <- let' $ r ** 6
-    --    #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ Vec2 -1 0)
-    --    -- without attractive part
-    --    -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ Vec2 -1 0)
-
-    -- do r <- let' $ ubo.worldWidth - pos.x + s / 2
-    --    r6 <- let' $ r ** 6
-    --    #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ Vec2 1 0)
-    --    -- without attractive part
-    --    -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ Vec2 1 0)
-
-    -- do r <- let' $ pos.y + s / 2
-    --    r6 <- let' $ r ** 6
-    --    #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ Vec2 0 -1)
-    --    -- without attractive part
-    --    -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ Vec2 0 -1)
-
-    -- do r <- let' $ ubo.worldHeight - pos.y + s / 2
-    --    r6 <- let' $ r ** 6
-    --    #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ Vec2 0 1)
-    --    -- without attractive part
-    --    -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ Vec2 0 1)
-
-    -- mass in Daltons
-    m <- let' 40
     -- apply unit conversion factors
-    convertedAcc <- #acc <<&>> (^/ (m * Lit jPereV * Lit avogadro * 1e-3))
+    -- we start with kg * m / s^2
+    -- we want to end up with dalton * angstrom / fs^2
+    forceE <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
 
-    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid convertedAcc
+    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (forceE ^/ m)
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -164,7 +177,7 @@ type GraphicsUniformInput = Struct
 
 type VertexDefs =
   '[ "position"  ':-> Input      '[Location 0                ] (V 3 Float)
-   , "type"      ':-> Input      '[Location 1                ] Word32
+   , "type"      ':-> Input      '[Location 1                ] Float
    , "vertColor" ':-> Output     '[Location 0                ] (V 4 Float)
    , "ubo"       ':-> Uniform    '[DescriptorSet 0, Binding 0] GraphicsUniformInput
    , "main"      ':-> EntryPoint '[                          ] Vertex
@@ -180,6 +193,7 @@ vertex = shader do
                             else ubo.worldHeight / floatHeight
 
   position <- #position
+  atomType <- #type
   pos <- let' $ view @(Swizzle "xy") position ^-^ Vec2 (ubo.worldWidth / 2) (ubo.worldHeight / 2)
   scaleWorld :: Code (M 2 2 Float) <- let' $ Mat22 (2 / ubo.worldWidth) 0 0 (2 / ubo.worldHeight)
   scaleWin :: Code (M 2 2 Float) <- let'
@@ -187,10 +201,9 @@ vertex = shader do
     then Mat22 1 0 0 (1/((ubo.worldWidth / ubo.worldHeight) * (floatHeight / floatWidth)))
     else Mat22 (1/((ubo.worldHeight / ubo.worldWidth) * (floatWidth / floatHeight))) 0 0 1
   #gl_Position .= (scaleWin !*! scaleWorld) !*^ pos <!> Vec2 0 1
-  speed <- let' $ log (position.z * 30)
-  #vertColor .= Vec4 speed 0.5 0.5 0.9
-  -- 3.76 is the diameter of Argon in Angstrom
-  #gl_PointSize .= 3.76 / angstromPerPixel
+  color <- let' $ atomColor atomType
+  #vertColor .= Vec4 color.x color.y color.z 0.9
+  #gl_PointSize .= 2 * radius atomType / angstromPerPixel
 
 type FragmentDefs =
   '[ "vertColor" ':-> Input      '[Location 0     ] (V 4 Float)
