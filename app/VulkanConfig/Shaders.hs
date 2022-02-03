@@ -96,10 +96,12 @@ updatePos = Module $ entryPoint @"main" @Compute do
 
 type UpdateAccLocalSize = 64
 
-mass, charge, radius :: Code Float -> Code Float
-mass atomType = if atomType == 0 then 5.486e-4 else if atomType == 1 then 1.007276466622 else 0
+mass, charge, radius, potential :: Code Float -> Code Float
+-- muon mass instead of electron
+mass atomType = if atomType == 0 then 0.1134289259 else if atomType == 1 then 1.007276466622 else 0
 charge atomType = if atomType == 0 then -1 else if atomType == 1 then 1 else 0
-radius atomType = if atomType == 0 then 0.1 else if atomType == 1 then 1 else 1
+radius atomType = if atomType == 0 then 0.5 else if atomType == 1 then 1 else 1
+potential atomType = if atomType == 0 then 10 else if atomType == 1 then 100 else 1
 
 atomColor :: Code Float -> Code (V 3 Float)
 atomColor atomType =
@@ -119,30 +121,30 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
     #acc #= Vec2 0 0
 
-    -- -- lennard jones
-    -- #i #= 0
-    -- s <- let' $ 3.4
-    -- s6 <- let' $ s ** 6
-    -- e <- let' $ 120 * Lit kB
-
-    -- while (#i <<&>> (< Lit numVertices)) do
-    --   i <- #i
-    --   #i %= (+ 1)
-    --   when (i /= gid) do
-    --     other <- use @(Name "posit" :.: Ar :.: Ix) i
-    --     otherPos <- let' $ view @(Swizzle "xy") other
-    --     r <- let' $ distance pos otherPos
-    --     r6 <- let' $ r ** 6
-    --     #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
-
-    -- -- apply unit conversion factors
-    -- forceLJ <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
-
-    -- electric
+    -- lennard jones
     #i #= 0
 
-    q <- let' $ charge atomType
+    while (#i <<&>> (< Lit numVertices)) do
+      i <- #i
+      #i %= (+ 1)
+      when (i /= gid) do
+        other <- use @(Name "posit" :.: Ar :.: Ix) i
+        otherPos <- let' $ view @(Swizzle "xy") other
+        s <- let' $ 1.8 * (radius atomType + radius other.w) / 2
+        e <- let' $ Lit kB * sqrt (potential atomType * potential other.w)
+        s6 <- let' $ s ** 6
+        r <- let' $ distance pos otherPos
+        r6 <- let' $ r ** 6
+        #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
+        -- only repulsive
+        -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
 
+    -- apply unit conversion factors
+    forceLJ <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
+
+    -- electric
+    #i .= 0
+    q <- let' $ charge atomType
     while (#i <<&>> (< Lit numVertices)) do
       i <- #i
       #i %= (+ 1)
@@ -152,7 +154,7 @@ updateAcc = Module $ entryPoint @"main" @Compute do
         otherQ <- let' $ charge other.w
         r <- let' $ distance pos otherPos
         r2 <- let' $ r * r
-        -- #acc %= (^+^ (Lit coulomb * q * otherQ / r2) *^ normalise (otherPos ^-^ pos))
+
         #acc %= (^+^ -(Lit coulomb * q * otherQ / r2) *^ normalise (otherPos ^-^ pos))
 
     -- apply unit conversion factors
@@ -160,7 +162,7 @@ updateAcc = Module $ entryPoint @"main" @Compute do
     -- we want to end up with dalton * angstrom / fs^2
     forceE <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
 
-    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (forceE ^/ m)
+    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid ((forceLJ ^+^ forceE) ^/ m)
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float

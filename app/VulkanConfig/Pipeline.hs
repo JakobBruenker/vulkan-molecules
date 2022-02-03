@@ -38,7 +38,7 @@ computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
 computeStorageData = Sized'.replicate . MkStorageData $
   Sized.replicate @(4 * SizeFloat * NumVertices) @Float 0
 
-type NumVertices = 3
+type NumVertices = 256
 type Size0 = 3
 type Size1 = 1
 
@@ -52,11 +52,9 @@ offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 
 -- 2D position, RGB color
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Float)
-vertexData = Partial.fromJust $ Sized.fromList
-  [ vertex ( 64, 54) 1
-  , vertex (128, 54) 1
-  , vertex ( 96, 20) 0
-  ]
+vertexData = Partial.fromJust $ Sized.fromList $ [(0 :: Int)..255] <&> \i'@(fromIntegral -> i) ->
+  vertex (i, 50 + (if i == 70 then 0.00001 else 0) + fromIntegral (i' `mod` 4) * 4)
+         (if i < 128 then 0 else 1)
   where
     vertex (a, b) c = (Sized.fromTuple (a, b, 0), c)
 
@@ -77,7 +75,7 @@ type instance UboInput Compute = ()
 
 computeUboData :: MonadIO m => m (UboData Compute)
 computeUboData = MkUboData proxy# (const id) <$>
-  newIORef @_ @ComputeUboContents (0.00001, (worldWidth, worldHeight))
+  newIORef @_ @ComputeUboContents (0.0002, (worldWidth, worldHeight))
 
 setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupComputeCommands = do
