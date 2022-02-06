@@ -50,8 +50,8 @@ main = do
 
 runApp :: (HasLogger, HasConfig) => IO ()
 runApp = runResourceT do
-  liftIO compileAllShaders
-  logDebug "Compiled shaders."
+  -- liftIO compileAllShaders
+  trace "" logDebug "Compiled shaders."
 
   Dict <- pure shaderPaths
   Dict <- vulkanConfig
