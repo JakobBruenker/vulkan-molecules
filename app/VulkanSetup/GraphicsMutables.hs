@@ -6,8 +6,8 @@ import RIO hiding (logDebug, logInfo, logWarn, logError)
 import RIO.Vector qualified as V
 import RIO.NonEmpty qualified as NE
 
-import Control.Lens (both, allOf, ifor_, Ixed (ix))
-import Data.Bits ((.|.))
+import Control.Lens (both, allOf, ifor_, Ixed (ix), ifind, (??))
+import Data.Bits ((.|.), testBit, xor, (.&.))
 import Data.Foldable (find)
 import Data.List (nub)
 import Control.Monad.Trans.Resource (allocate, ReleaseKey, ResIO)
@@ -49,10 +49,13 @@ constructGraphicsMutables = do
   (layoutKey    , pipelineLayout) <- constructGraphicsPipelineLayout
   (pipelineKey  , pipeline      ) <-
     constructGraphicsPipeline renderPass swapchainExtent pipelineLayout
-  (imageKeys    , imageRelateds) <-
-    constructImageRelateds swapchainExtent swapchainFormat renderPass swapchain
 
-  pure ([swapchainKey, renderPassKey, layoutKey, pipelineKey] <> imageKeys, MkGraphicsMutables{..})
+  (depthKeys, (depthImage, depthImageView)) <- constructDepthResources swapchainExtent
+  (imageKeys, imageRelateds) <-
+    constructImageRelateds swapchainExtent swapchainFormat renderPass swapchain depthImageView
+
+  pure ( [swapchainKey, renderPassKey, layoutKey, pipelineKey] <> imageKeys <> depthKeys
+       , MkGraphicsMutables{..})
 
 constructSwapchain :: (HasLogger, HasDevice)
                    => SwapchainCreateInfoKHR '[] -> ResIO (ReleaseKey, SwapchainKHR)
@@ -155,7 +158,7 @@ constructGraphicsPipeline renderPass extent layout = do
                                            .|. COLOR_COMPONENT_A_BIT
                             , blendEnable = True
                             , srcColorBlendFactor = BLEND_FACTOR_SRC_ALPHA
-                            , dstColorBlendFactor = BLEND_FACTOR_SRC_ALPHA
+                            , dstColorBlendFactor = BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
                             , colorBlendOp = BLEND_OP_ADD
                             , srcAlphaBlendFactor = BLEND_FACTOR_ONE
                             , dstAlphaBlendFactor = BLEND_FACTOR_ZERO
@@ -178,7 +181,14 @@ constructGraphicsPipeline renderPass extent layout = do
                                       , name = "main"
                                       }
             shaderStages = SomeStruct <$> [vertShaderStageInfo, fragShaderStageInfo]
+            depthStencil = zero{ depthTestEnable = True
+                               , depthWriteEnable = True
+                               , depthCompareOp = COMPARE_OP_LESS
+                               , depthBoundsTestEnable = False
+                               , stencilTestEnable = False
+                               }
             pipelineInfo = pure $ SomeStruct zero{ stages = shaderStages
+                                                 , depthStencilState = Just depthStencil
                                                  , vertexInputState
                                                  , inputAssemblyState
                                                  , viewportState
@@ -214,17 +224,33 @@ constructGraphicsRenderPass format = do
       colorAttachmentRef = zero{ attachment = 0
                                , layout = IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
                                } :: AttachmentReference
+      depthAttachment = zero{ format = FORMAT_D32_SFLOAT
+                            , samples = SAMPLE_COUNT_1_BIT
+                            , loadOp = ATTACHMENT_LOAD_OP_CLEAR
+                            , storeOp = ATTACHMENT_STORE_OP_DONT_CARE
+                            , stencilLoadOp = ATTACHMENT_LOAD_OP_DONT_CARE
+                            , stencilStoreOp = ATTACHMENT_STORE_OP_DONT_CARE
+                            , initialLayout = IMAGE_LAYOUT_UNDEFINED
+                            , finalLayout = IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                            } :: AttachmentDescription
+      depthAttachmentRef = zero{ attachment = 1
+                               , layout = IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                               } :: AttachmentReference
       subpass = zero{ pipelineBindPoint = PIPELINE_BIND_POINT_GRAPHICS
                     , colorAttachments = [colorAttachmentRef]
+                    , depthStencilAttachment = Just depthAttachmentRef
                     } :: SubpassDescription
       dependency = zero{ srcSubpass = SUBPASS_EXTERNAL
                        , dstSubpass = 0
                        , srcStageMask = PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                                    .|. PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
                        , srcAccessMask = zero
                        , dstStageMask = PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                                    .|. PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
                        , dstAccessMask = ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                                     .|. ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
                        } :: SubpassDependency
-      renderPassInfo = zero{ attachments = [colorAttachment]
+      renderPassInfo = zero{ attachments = [colorAttachment, depthAttachment]
                            , subpasses = [subpass]
                            , dependencies = [dependency]
                            } :: RenderPassCreateInfo '[]
@@ -234,18 +260,64 @@ constructGraphicsRenderPass format = do
   logDebug "Created render pass."
   pure renderPass
 
+constructDepthResources :: (HasPhysicalDevice, HasDevice)
+                        => Extent2D -> ResIO ([ReleaseKey], (Image, ImageView))
+constructDepthResources Extent2D{width, height} = do
+  let format = FORMAT_D32_SFLOAT
+      imageInfo = zero{ imageType = IMAGE_TYPE_2D
+                      , extent = Extent3D{width, height, depth = 1}
+                      , mipLevels = 1
+                      , arrayLayers = 1
+                      , format
+                      , tiling = IMAGE_TILING_OPTIMAL
+                      , initialLayout = IMAGE_LAYOUT_UNDEFINED
+                      , usage = IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                      , samples = SAMPLE_COUNT_1_BIT
+                      , sharingMode = SHARING_MODE_EXCLUSIVE
+                      }
+  (imgKey, image) <- withImage ?device imageInfo Nothing allocate
+
+  memReqs <- getImageMemoryRequirements ?device image
+  memProps <- getPhysicalDeviceMemoryProperties ?physicalDevice
+
+  -- TODO factor this out, it's also in VulkanSetup.Initialize
+  let properties = MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+      memoryType = ifind ?? memProps.memoryTypes $ \i MemoryType{propertyFlags} ->
+        testBit memReqs.memoryTypeBits i &&
+        -- check whether all properties are set
+        ((propertyFlags `xor` properties) .&. properties == zero)
+
+  memoryTypeIndex <- maybe (throwIO VkNoSuitableMemoryType) (pure . fromIntegral . fst) memoryType
+  let allocInfo = zero{allocationSize = memReqs.size , memoryTypeIndex}
+
+  (memKey, memory) <- withMemory ?device allocInfo Nothing allocate
+
+  bindImageMemory ?device image memory 0
+
+  let imageViewInfo = zero{ image
+                          , viewType = IMAGE_VIEW_TYPE_2D
+                          , format
+                          , subresourceRange = zero{ aspectMask = IMAGE_ASPECT_DEPTH_BIT
+                                                   , levelCount = 1
+                                                   , layerCount = 1
+                                                   }
+                          }
+  (imgViewKey, imgView) <- withImageView ?device imageViewInfo Nothing allocate
+  pure ([imgKey, imgViewKey, memKey], (image, imgView))
+
 constructImageRelateds :: (HasLogger, HasDevice, HasGraphicsCommandPool,
                            HasGraphicsDescriptorSetLayout, HasGraphicsUniformBufferSize,
                            HasGraphicsUniformBuffers)
-                       => Extent2D -> Format -> RenderPass -> SwapchainKHR
+                       => Extent2D -> Format -> RenderPass -> SwapchainKHR -> ImageView
                        -> ResIO ([ReleaseKey], Vector ImageRelated)
-constructImageRelateds extent format renderPass swapchain = do
+constructImageRelateds extent format renderPass swapchain depthIV = do
   (_, images) <- getSwapchainImagesKHR ?device swapchain
   let count = fromIntegral $ length images
   (cmdBufKey, commandBuffers) <- constructCommandBuffers count
   (dstKey, descriptorSets) <- constructDescriptorSets count
   (releaseKeys, imageRelateds) <- fmap V.unzip . sequence $
-    V.zipWith3 (constructImageRelated extent format renderPass) images commandBuffers descriptorSets
+    V.zipWith3 (constructImageRelated extent format renderPass depthIV)
+               images commandBuffers descriptorSets
 
   logDebug "Created images."
   pure (cmdBufKey : dstKey : concat releaseKeys, imageRelateds)
@@ -294,12 +366,13 @@ constructDescriptorSets count = do
   pure (poolKey, descriptorSets)
 
 constructImageRelated :: HasDevice
-                      => Extent2D -> Format -> RenderPass -> Image -> CommandBuffer -> DescriptorSet
+                      => Extent2D -> Format -> RenderPass -> ("depthImageView" ::: ImageView)
+                      -> Image -> CommandBuffer -> DescriptorSet
                       -> ResIO ([ReleaseKey], ImageRelated)
-constructImageRelated extent format renderPass image commandBuffer descriptorSet = do
+constructImageRelated extent format renderPass depthIV image commandBuffer descriptorSet = do
   imageInFlight                 <- constructImageInFlight
   (imgViewKey , imageView     ) <- constructImageView image format
-  (framebufKey, framebuffer   ) <- constructFramebuffer extent renderPass imageView
+  (framebufKey, framebuffer   ) <- constructFramebuffer extent renderPass imageView depthIV
   pure ([imgViewKey, framebufKey], MkImageRelated{..})
 
 constructImageInFlight :: MonadIO m => m (IORef (Maybe Fence))
@@ -319,14 +392,17 @@ constructImageView image format = do
   withImageView ?device ivInfo{image} Nothing allocate
 
 constructFramebuffer :: HasDevice
-                     => Extent2D -> RenderPass -> ImageView -> ResIO (ReleaseKey, Framebuffer)
-constructFramebuffer Extent2D{width, height} renderPass imageView = do
+                     => Extent2D -> RenderPass
+                     -> ("imgView" ::: ImageView) -> ("depthImgView" ::: ImageView)
+                     -> ResIO (ReleaseKey, Framebuffer)
+constructFramebuffer Extent2D{width, height} renderPass imageView depthImageView = do
   let fbInfo = zero{ renderPass
+                   , attachments = [imageView, depthImageView]
                    , width
                    , height
                    , layers = 1
                    }
-  withFramebuffer ?device fbInfo{attachments = [imageView]} Nothing allocate
+  withFramebuffer ?device fbInfo Nothing allocate
 
 recreateSwapchain :: (HasLogger, HasVulkanResources)
                   => (HasVulkanResources => ResIO ()) -> ResIO ()

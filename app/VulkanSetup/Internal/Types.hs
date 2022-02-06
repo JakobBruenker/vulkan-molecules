@@ -127,6 +127,8 @@ data GraphicsMutables = MkGraphicsMutables { imageRelateds   :: Vector ImageRela
                                            , renderPass      :: RenderPass
                                            , pipelineLayout  :: PipelineLayout
                                            , pipeline        :: Pipeline
+                                           , depthImage      :: Image
+                                           , depthImageView  :: ImageView
                                            }
 
 data ComputeMutables = MkComputeMutables { pipelineLayout :: PipelineLayout

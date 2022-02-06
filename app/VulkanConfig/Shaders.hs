@@ -234,18 +234,20 @@ vertex = shader do
   #gl_PointSize .= 2 * radius atomType / angstromPerPixel
 
 type FragmentDefs =
-  '[ "vertColor" ':-> Input      '[Location 0     ] (V 3 Float)
-   , "color"     ':-> Output     '[Location 0     ] (V 4 Float)
-   , "main"      ':-> EntryPoint '[OriginUpperLeft] Fragment
+  '[ "vertColor" ':-> Input      '[Location 0                     ] (V 3 Float)
+   , "color"     ':-> Output     '[Location 0                     ] (V 4 Float)
+   , "main"      ':-> EntryPoint '[OriginUpperLeft, DepthReplacing] Fragment
    ]
 
 fragment :: ShaderModule "main" FragmentShader FragmentDefs _
 fragment = shader do
   pCoord <- #gl_PointCoord
+  depth <- let' $ squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1)
   -- Limit color to a disk with darkened limb
-  col <- #vertColor <<&>> (^* (1 - squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1)))
+  col <- #vertColor <<&>> (^* (1 - depth))
 
   #color .= Vec4 col.x col.y col.z 1
+  #gl_FragDepth .= depth
 
 -- Currently unused. Still points out useful type errors though. You could use
 -- this to interface with the vulkan library to catch even more.

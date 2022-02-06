@@ -107,7 +107,9 @@ setupGraphicsCommands = do
       let renderPassInfo = zero{ renderPass = mutables.renderPass
                                , framebuffer = ir.framebuffer
                                , renderArea = zero{extent = mutables.swapchainExtent}
-                               , clearValues = [Color $ Float32 0 0 0 1]
+                               , clearValues = [ Color $ Float32 0 0 0 1
+                                               , DepthStencil $ ClearDepthStencilValue 1 0
+                                               ]
                                }
       cmdUseRenderPass ir.commandBuffer renderPassInfo SUBPASS_CONTENTS_INLINE do
         cmdBindPipeline ir.commandBuffer PIPELINE_BIND_POINT_GRAPHICS mutables.pipeline
@@ -140,7 +142,7 @@ vertexInputInfo = SomeStruct zero{vertexBindingDescriptions, vertexAttributeDesc
                                          } :: VertexInputAttributeDescription
                                   , zero { binding = 0
                                          , location = 1
-                                         , format = FORMAT_R32_SFLOAT
+                                         , format = FORMAT_R32_UINT
                                          , offset = offset1
                                          } :: VertexInputAttributeDescription
                                   ]
