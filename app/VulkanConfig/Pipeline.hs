@@ -50,10 +50,10 @@ vertexSize = floatSize * numVertexEntries
 offset0 = 0
 offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 
--- 2D position, RGB color
-vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Float)
+-- 2D position, atom type
+vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Word32)
 vertexData = Partial.fromJust $ Sized.fromList $ [(0 :: Int)..255] <&> \i'@(fromIntegral -> i) ->
-  vertex (i, 50 + (if i == 70 then 0.00001 else 0) + fromIntegral (i' `mod` 4) * 4)
+  vertex (2 * i / 3, 50 + fromIntegral (i' `mod` 4) * 8)
          (if i < 128 then 0 else 1)
   where
     vertex (a, b) c = (Sized.fromTuple (a, b, 0), c)

@@ -155,11 +155,11 @@ constructGraphicsPipeline renderPass extent layout = do
                                            .|. COLOR_COMPONENT_A_BIT
                             , blendEnable = True
                             , srcColorBlendFactor = BLEND_FACTOR_SRC_ALPHA
-                            , dstColorBlendFactor = BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+                            , dstColorBlendFactor = BLEND_FACTOR_SRC_ALPHA
                             , colorBlendOp = BLEND_OP_ADD
                             , srcAlphaBlendFactor = BLEND_FACTOR_ONE
                             , dstAlphaBlendFactor = BLEND_FACTOR_ZERO
-                            , alphaBlendOp = BLEND_OP_ADD
+                            , alphaBlendOp = BLEND_OP_MAX
                             }
       colorBlendState = Just $ SomeStruct zero{ logicOpEnable = False
                                               , attachments = [blendAttachment]

@@ -52,6 +52,7 @@ type Ix = AnIndex Word32
 type StorageArray deco a = StorageBuffer deco (Struct '["array" ':-> RuntimeArray a])
 
 type Ubo    = "ubo"    ':-> Uniform      '[DescriptorSet 0, Binding 0      ] ComputeUniformInput
+-- The fourth value of "posit" is actually the type encoded as an unsigned integer
 type Posit  = "posit"  ':-> StorageArray '[DescriptorSet 1, Binding 0      ] (V 4 Float)
 type Veloc  = "veloc"  ':-> StorageArray '[DescriptorSet 1, Binding 1      ] (V 4 Float)
 type Accel  = "accel"  ':-> StorageArray '[DescriptorSet 1, Binding 2      ] (V 4 Float)
@@ -96,14 +97,14 @@ updatePos = Module $ entryPoint @"main" @Compute do
 
 type UpdateAccLocalSize = 64
 
-mass, charge, radius, potential :: Code Float -> Code Float
+mass, charge, radius, potential :: Code Word32 -> Code Float
 -- muon mass instead of electron
 mass atomType = if atomType == 0 then 0.1134289259 else if atomType == 1 then 1.007276466622 else 0
 charge atomType = if atomType == 0 then -1 else if atomType == 1 then 1 else 0
 radius atomType = if atomType == 0 then 0.5 else if atomType == 1 then 1 else 1
 potential atomType = if atomType == 0 then 10 else if atomType == 1 then 100 else 1
 
-atomColor :: Code Float -> Code (V 3 Float)
+atomColor :: Code Word32 -> Code (V 3 Float)
 atomColor atomType =
   if atomType == 0 then Vec3 0 0.3 0.6 else if atomType == 1 then Vec3 0.6 0 0 else Vec3 1 1 1
 
@@ -114,14 +115,58 @@ updateAcc = Module $ entryPoint @"main" @Compute do
   when (gid < Lit numVertices) $ locally do
     position <- use @(Name "posit" :.: Ar :.: Ix) gid
     pos <- let' $ view @(Swizzle "xy") position
-    atomType <- let' $ position.w
+    atomType <- let' $ bitcast position.w
 
     -- mass in Daltons
     m <- let' $ mass atomType
 
     #acc #= Vec2 0 0
 
-    -- lennard jones
+    -- -- lennard jones
+    -- #i #= 0
+
+    -- while (#i <<&>> (< Lit numVertices)) do
+    --   i <- #i
+    --   #i %= (+ 1)
+    --   when (i /= gid) do
+    --     other <- use @(Name "posit" :.: Ar :.: Ix) i
+    --     otherPos <- let' $ view @(Swizzle "xy") other
+    --     otherType <- let' $ bitcast other.w
+    --     s <- let' $ 1.8 * (radius atomType + radius otherType) / 2
+    --     e <- let' $ Lit kB * sqrt (potential atomType * potential otherType)
+    --     s6 <- let' $ s ** 6
+    --     r <- let' $ distance pos otherPos
+    --     r6 <- let' $ r ** 6
+    --     #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
+    --     -- only repulsive
+    --     -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
+
+    -- -- apply unit conversion factors
+    -- forceLJ <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
+
+    -- -- electric
+    -- #i .= 0
+    -- q <- let' $ charge atomType
+    -- while (#i <<&>> (< Lit numVertices)) do
+    --   i <- #i
+    --   #i %= (+ 1)
+    --   when (i /= gid) do
+    --     other <- use @(Name "posit" :.: Ar :.: Ix) i
+    --     otherPos <- let' $ view @(Swizzle "xy") other
+    --     otherType <- let' $ bitcast other.w
+    --     otherQ <- let' $ charge otherType
+    --     r <- let' $ distance pos otherPos
+    --     r2 <- let' $ r * r
+
+    --     #acc %= (^+^ -(Lit coulomb * q * otherQ / r2) *^ normalise (otherPos ^-^ pos))
+
+    -- -- apply unit conversion factors
+    -- -- we start with kg * m / s^2
+    -- -- we want to end up with dalton * angstrom / fs^2
+    -- forceE <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
+
+    -- assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid ((forceLJ ^+^ forceE) ^/ m)
+
     #i #= 0
 
     while (#i <<&>> (< Lit numVertices)) do
@@ -130,39 +175,20 @@ updateAcc = Module $ entryPoint @"main" @Compute do
       when (i /= gid) do
         other <- use @(Name "posit" :.: Ar :.: Ix) i
         otherPos <- let' $ view @(Swizzle "xy") other
-        s <- let' $ 1.8 * (radius atomType + radius other.w) / 2
-        e <- let' $ Lit kB * sqrt (potential atomType * potential other.w)
+        otherType <- let' $ bitcast other.w
+        s <- let' $ 1.8 * (radius atomType + radius otherType) / 2
+        e <- let' $ Lit kB * sqrt (potential atomType * potential otherType)
         s6 <- let' $ s ** 6
         r <- let' $ distance pos otherPos
         r6 <- let' $ r ** 6
-        #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
-        -- only repulsive
-        -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
+        #acc %= (^+^ min 0.01 (0.01 / (r*r)) *^ normalise (otherPos ^-^ pos))
 
     -- apply unit conversion factors
-    forceLJ <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
+    -- -- we start with kg * m / s^2
+    -- -- we want to end up with dalton * angstrom / fs^2
+    forceBond <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
 
-    -- electric
-    #i .= 0
-    q <- let' $ charge atomType
-    while (#i <<&>> (< Lit numVertices)) do
-      i <- #i
-      #i %= (+ 1)
-      when (i /= gid) do
-        other <- use @(Name "posit" :.: Ar :.: Ix) i
-        otherPos <- let' $ view @(Swizzle "xy") other
-        otherQ <- let' $ charge other.w
-        r <- let' $ distance pos otherPos
-        r2 <- let' $ r * r
-
-        #acc %= (^+^ -(Lit coulomb * q * otherQ / r2) *^ normalise (otherPos ^-^ pos))
-
-    -- apply unit conversion factors
-    -- we start with kg * m / s^2
-    -- we want to end up with dalton * angstrom / fs^2
-    forceE <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
-
-    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid ((forceLJ ^+^ forceE) ^/ m)
+    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (forceBond ^/ m)
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -179,8 +205,8 @@ type GraphicsUniformInput = Struct
 
 type VertexDefs =
   '[ "position"  ':-> Input      '[Location 0                ] (V 3 Float)
-   , "type"      ':-> Input      '[Location 1                ] Float
-   , "vertColor" ':-> Output     '[Location 0                ] (V 4 Float)
+   , "type"      ':-> Input      '[Location 1                ] Word32
+   , "vertColor" ':-> Output     '[Location 0                ] (V 3 Float)
    , "ubo"       ':-> Uniform    '[DescriptorSet 0, Binding 0] GraphicsUniformInput
    , "main"      ':-> EntryPoint '[                          ] Vertex
    ]
@@ -204,11 +230,11 @@ vertex = shader do
     else Mat22 (1/((ubo.worldHeight / ubo.worldWidth) * (floatWidth / floatHeight))) 0 0 1
   #gl_Position .= (scaleWin !*! scaleWorld) !*^ pos <!> Vec2 0 1
   color <- let' $ atomColor atomType
-  #vertColor .= Vec4 color.x color.y color.z 0.9
+  #vertColor .= color
   #gl_PointSize .= 2 * radius atomType / angstromPerPixel
 
 type FragmentDefs =
-  '[ "vertColor" ':-> Input      '[Location 0     ] (V 4 Float)
+  '[ "vertColor" ':-> Input      '[Location 0     ] (V 3 Float)
    , "color"     ':-> Output     '[Location 0     ] (V 4 Float)
    , "main"      ':-> EntryPoint '[OriginUpperLeft] Fragment
    ]
@@ -216,10 +242,10 @@ type FragmentDefs =
 fragment :: ShaderModule "main" FragmentShader FragmentDefs _
 fragment = shader do
   pCoord <- #gl_PointCoord
-  col <- #vertColor
+  col <- #vertColor <<&>> (^* (1 - squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1)))
 
   -- Limit alpha to a disk with darkened limb
-  #color .= over @(Index 3) (* (1 - squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1))) col
+  #color .= Vec4 col.x col.y col.z 1
 
 -- Currently unused. Still points out useful type errors though. You could use
 -- this to interface with the vulkan library to catch even more.
