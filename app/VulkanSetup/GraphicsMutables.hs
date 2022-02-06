@@ -231,10 +231,10 @@ constructGraphicsRenderPass format = do
                             , stencilLoadOp = ATTACHMENT_LOAD_OP_DONT_CARE
                             , stencilStoreOp = ATTACHMENT_STORE_OP_DONT_CARE
                             , initialLayout = IMAGE_LAYOUT_UNDEFINED
-                            , finalLayout = IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                            , finalLayout = IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                             } :: AttachmentDescription
       depthAttachmentRef = zero{ attachment = 1
-                               , layout = IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                               , layout = IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                                } :: AttachmentReference
       subpass = zero{ pipelineBindPoint = PIPELINE_BIND_POINT_GRAPHICS
                     , colorAttachments = [colorAttachmentRef]
