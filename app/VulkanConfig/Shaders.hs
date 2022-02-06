@@ -242,9 +242,9 @@ type FragmentDefs =
 fragment :: ShaderModule "main" FragmentShader FragmentDefs _
 fragment = shader do
   pCoord <- #gl_PointCoord
+  -- Limit color to a disk with darkened limb
   col <- #vertColor <<&>> (^* (1 - squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1)))
 
-  -- Limit alpha to a disk with darkened limb
   #color .= Vec4 col.x col.y col.z 1
 
 -- Currently unused. Still points out useful type errors though. You could use
