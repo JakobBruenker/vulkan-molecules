@@ -101,6 +101,12 @@ updatePos = Module $ entryPoint @"main" @Compute do
 type UpdateAccLocalSize = 64
 
 type AtomType = Word32
+
+-- XXX raised for testing purposes
+-- The lowest type that can form π-bonds
+minπType :: AtomType
+minπType = 100
+
 p_bo1_lut, p_bo2_lut, p_bo3_lut, p_bo4_lut, p_bo5_lut, p_bo6_lut
   :: Code AtomType -> Code AtomType -> Code Float
 p_bo1_lut i j = if i == 1 && j == 1 then -0.016 else
@@ -221,23 +227,23 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
         let fbo' pa pb ro = exp (pa * (r / ro)**pb)
             bo'σ = fbo' p_bo1 p_bo2 rσ
-            -- the second shell needs to have electrons for pi bonds to make sense
-            bo'π = if itype > 2 || jtype > 2 then fbo' p_bo3 p_bo4 rπ else 0
-            bo'ππ = if itype > 2 || jtype > 2 then fbo' p_bo5 p_bo6 rππ else 0
+            bo'π = if itype >= Lit minπType && jtype >= Lit minπType then fbo' p_bo3 p_bo4 rπ else 0
+            bo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fbo' p_bo5 p_bo6 rππ else 0
         bo' <- let' $ bo'σ + bo'π + bo'ππ
 
         let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' pa pb ro
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
-            -- the second shell needs to have electrons for pi bonds to make sense
-            dbo'π = if itype > 2 || jtype > 2 then fdbo' p_bo3 p_bo4 rπ else 0
-            dbo'ππ = if itype > 2 || jtype > 2 then fdbo' p_bo5 p_bo6 rππ else 0
+            dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
+            dbo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo5 p_bo6 rππ else 0
         dbo' <- let' $ ((dbo'σ + dbo'π + dbo'ππ) / r) *^ dr
         -- TODO: this only depends on the radius, not ix and iy individually -
         -- can we take advantage of that to make the derivative simpler? (1D rather than 2D)
 
         -- FIXME: why do we have to add the -?
-        de <- let' $ -(de_lut itype jtype)
+        -- Why are they being repelled without it? Why are they being repelled with it?
+        de <- let' $ (de_lut itype jtype)
 
+        -- FIXME: why is it numerically unstable? It really shouldn't be
         #force %= (^+^ -de *^ dbo')
 
     -- apply unit conversion factors
