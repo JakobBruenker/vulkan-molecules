@@ -77,8 +77,6 @@ initInstance = do
   logDebug "Created instance."
   pure Dict
 
--- FIXME: when you have two monitors your focus is on the smaller monitor, a
--- fullscreen window will be too small (with X11).
 initWindow :: (HasLogger, HasConfig, HasGLFW) => ResIO (Dict (HasWindow, HasFramebufferResized))
 initWindow = do
   !_ <- pure ?glfw -- making sure GLFW really is initialized
@@ -226,9 +224,11 @@ initPhysicalDevice = do
 
     getSampleCount :: (MonadIO m, HasPhysicalDevice) => m (Dict HasMsaaSamples)
     getSampleCount = do
-      let desired = SAMPLE_COUNT_8_BIT
+      let desired = SAMPLE_COUNT_4_BIT
+      devFeatures <- getPhysicalDeviceFeatures ?physicalDevice
       devLimits <- getPhysicalDeviceProperties ?physicalDevice <&> \p -> p.limits
-      let ?msaaSamples = if   devLimits.framebufferColorSampleCounts
+      let ?msaaSamples = if   devFeatures.sampleRateShading
+                           && devLimits.framebufferColorSampleCounts
                           .&. devLimits.framebufferDepthSampleCounts
                           .&. desired /= zero
                          then desired
@@ -245,6 +245,8 @@ initDevice = do
       deviceCreateInfo = zero{ queueCreateInfos
                              , enabledLayerNames = ?validationLayers
                              , enabledExtensionNames = deviceExtensions
+                             , enabledFeatures =
+                                 Just zero{sampleRateShading = ?msaaSamples /= SAMPLE_COUNT_1_BIT}
                              }
   (_, device) <- withDevice ?physicalDevice deviceCreateInfo Nothing allocate
   let ?device = device

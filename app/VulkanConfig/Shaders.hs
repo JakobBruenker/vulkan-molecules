@@ -246,13 +246,13 @@ type FragmentDefs =
 fragment :: ShaderModule "main" FragmentShader FragmentDefs _
 fragment = shader do
   pointSize <- #pointSize
-  pCoord <- #gl_PointCoord
-  position <- #gl_SamplePosition
-  depth <- let' $ squaredNorm ((pCoord ^+^ (position ^/ pointSize)) ^* 2 ^-^ Vec2 1 1)
+  samplePos <- #gl_SamplePosition
+  pCoord <- #gl_PointCoord <<&>> (^+^ ((samplePos ^-^ Vec2 0.5 0.5) ^/ pointSize))
+  depth <- let' $ squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1)
   -- Limit color to a disk with darkened limb
   col <- #vertColor <<&>> (^* (1 - depth))
 
-  #color .= Vec4 col.x col.y col.z 1
+  #color .= Vec4 col.r col.g col.b 1
   #gl_FragDepth .= depth
 
 -- Currently unused. Still points out useful type errors though. You could use
