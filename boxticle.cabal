@@ -83,6 +83,7 @@ executable boxticle
                         NoStarIsType,
                         NoImplicitPrelude,
                         NumDecimals,
+                        MonadComprehensions,
                         OverloadedLabels,
                         OverloadedStrings,
                         OverloadedRecordDot,

@@ -162,6 +162,7 @@ initPhysicalDevice = do
               guard =<< checkDeviceExtensionSupport
               Dict <- querySwapchainSupport
               Dict <- findQueueFamilies
+              Dict <- getSampleCount
               Max . flip Arg Dict <$> score
 
   case dict of
@@ -221,6 +222,18 @@ initPhysicalDevice = do
       Just swapchainPresentModes <- NE.nonEmpty . toList . snd <$> presentModes
       let ?swapchainFormats      = swapchainFormats
           ?swapchainPresentModes = swapchainPresentModes
+      pure Dict
+
+    getSampleCount :: (MonadIO m, HasPhysicalDevice) => m (Dict HasMsaaSamples)
+    getSampleCount = do
+      let desired = SAMPLE_COUNT_8_BIT
+      devLimits <- getPhysicalDeviceProperties ?physicalDevice <&> \p -> p.limits
+      let ?msaaSamples = if   devLimits.framebufferColorSampleCounts
+                          .&. devLimits.framebufferDepthSampleCounts
+                          .&. desired /= zero
+                         then desired
+                         else SAMPLE_COUNT_1_BIT
+      logDebug $ "Using " <> displayShow ?msaaSamples <> "."
       pure Dict
 
 initDevice :: (HasLogger, HasPhysicalDeviceRelated, HasValidationLayers)

@@ -50,11 +50,13 @@ constructGraphicsMutables = do
   (pipelineKey  , pipeline      ) <-
     constructGraphicsPipeline renderPass swapchainExtent pipelineLayout
 
+  (colorKeys, (colorImage, colorImageView)) <- constructColorResources swapchainExtent swapchainFormat
   (depthKeys, (depthImage, depthImageView)) <- constructDepthResources swapchainExtent
   (imageKeys, imageRelateds) <-
-    constructImageRelateds swapchainExtent swapchainFormat renderPass swapchain depthImageView
+    constructImageRelateds swapchainExtent swapchainFormat renderPass swapchain
+                           colorImageView depthImageView
 
-  pure ( [swapchainKey, renderPassKey, layoutKey, pipelineKey] <> imageKeys <> depthKeys
+  pure ( [swapchainKey, renderPassKey, layoutKey, pipelineKey] <> imageKeys <> depthKeys <> colorKeys
        , MkGraphicsMutables{..})
 
 constructSwapchain :: (HasLogger, HasDevice)
@@ -130,7 +132,7 @@ constructGraphicsPipelineLayout =
   withPipelineLayout
     ?device ?graphicsPipelineLayoutInfo{setLayouts = [?graphicsDescriptorSetLayout]} Nothing allocate
 
-constructGraphicsPipeline :: (HasLogger, HasDevice, HasShaderPaths, HasVulkanConfig)
+constructGraphicsPipeline :: (HasLogger, HasDevice, HasShaderPaths, HasVulkanConfig, HasMsaaSamples)
                           => RenderPass -> Extent2D -> PipelineLayout -> ResIO (ReleaseKey, Pipeline)
 constructGraphicsPipeline renderPass extent layout = do
   let vertexInputState = Just ?vertexInputInfo
@@ -149,7 +151,7 @@ constructGraphicsPipeline renderPass extent layout = do
                                           , cullMode = CULL_MODE_BACK_BIT
                                           , frontFace = FRONT_FACE_CLOCKWISE
                                           }
-      multisampleState = Just $ SomeStruct zero{ rasterizationSamples = SAMPLE_COUNT_1_BIT
+      multisampleState = Just $ SomeStruct zero{ rasterizationSamples = ?msaaSamples
                                                , minSampleShading = 1
                                                }
       blendAttachment = zero{ colorWriteMask = COLOR_COMPONENT_R_BIT
@@ -211,21 +213,23 @@ constructGraphicsPipeline renderPass extent layout = do
 
 constructGraphicsRenderPass :: (HasLogger, HasGraphicsResources)
                             => Format -> ResIO (ReleaseKey, RenderPass)
-constructGraphicsRenderPass format = do
-  let colorAttachment = zero{ format
-                            , samples = SAMPLE_COUNT_1_BIT
+constructGraphicsRenderPass colorFormat = do
+  let colorAttachment = zero{ format = colorFormat
+                            , samples = ?msaaSamples
                             , loadOp = ATTACHMENT_LOAD_OP_CLEAR
                             , storeOp = ATTACHMENT_STORE_OP_STORE
                             , stencilLoadOp = ATTACHMENT_LOAD_OP_DONT_CARE
                             , stencilStoreOp = ATTACHMENT_STORE_OP_DONT_CARE
                             , initialLayout = IMAGE_LAYOUT_UNDEFINED
-                            , finalLayout = IMAGE_LAYOUT_PRESENT_SRC_KHR
+                            , finalLayout = if ?msaaSamples == SAMPLE_COUNT_1_BIT
+                                then IMAGE_LAYOUT_PRESENT_SRC_KHR
+                                else IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
                             } :: AttachmentDescription
       colorAttachmentRef = zero{ attachment = 0
                                , layout = IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
                                } :: AttachmentReference
       depthAttachment = zero{ format = FORMAT_D32_SFLOAT
-                            , samples = SAMPLE_COUNT_1_BIT
+                            , samples = ?msaaSamples
                             , loadOp = ATTACHMENT_LOAD_OP_CLEAR
                             , storeOp = ATTACHMENT_STORE_OP_DONT_CARE
                             , stencilLoadOp = ATTACHMENT_LOAD_OP_DONT_CARE
@@ -236,9 +240,22 @@ constructGraphicsRenderPass format = do
       depthAttachmentRef = zero{ attachment = 1
                                , layout = IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                                } :: AttachmentReference
+      colorAttResolve = zero{ format = colorFormat
+                            , samples = SAMPLE_COUNT_1_BIT
+                            , loadOp = ATTACHMENT_LOAD_OP_DONT_CARE
+                            , storeOp = ATTACHMENT_STORE_OP_STORE
+                            , stencilLoadOp = ATTACHMENT_LOAD_OP_DONT_CARE
+                            , stencilStoreOp = ATTACHMENT_STORE_OP_DONT_CARE
+                            , initialLayout = IMAGE_LAYOUT_UNDEFINED
+                            , finalLayout = IMAGE_LAYOUT_PRESENT_SRC_KHR
+                            } :: AttachmentDescription
+      colorAttResolveRef = zero{ attachment = 2
+                               , layout = IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                               } :: AttachmentReference
       subpass = zero{ pipelineBindPoint = PIPELINE_BIND_POINT_GRAPHICS
                     , colorAttachments = [colorAttachmentRef]
                     , depthStencilAttachment = Just depthAttachmentRef
+                    , resolveAttachments = [colorAttResolveRef | ?msaaSamples /= SAMPLE_COUNT_1_BIT]
                     } :: SubpassDescription
       dependency = zero{ srcSubpass = SUBPASS_EXTERNAL
                        , dstSubpass = 0
@@ -250,7 +267,8 @@ constructGraphicsRenderPass format = do
                        , dstAccessMask = ACCESS_COLOR_ATTACHMENT_WRITE_BIT
                                      .|. ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
                        } :: SubpassDependency
-      renderPassInfo = zero{ attachments = [colorAttachment, depthAttachment]
+      renderPassInfo = zero{ attachments = [colorAttachment, depthAttachment] <>
+                                           [colorAttResolve | ?msaaSamples /= SAMPLE_COUNT_1_BIT]
                            , subpasses = [subpass]
                            , dependencies = [dependency]
                            } :: RenderPassCreateInfo '[]
@@ -260,19 +278,34 @@ constructGraphicsRenderPass format = do
   logDebug "Created render pass."
   pure renderPass
 
-constructDepthResources :: (HasPhysicalDevice, HasDevice)
+constructDepthResources :: (HasPhysicalDevice, HasDevice, HasMsaaSamples)
                         => Extent2D -> ResIO ([ReleaseKey], (Image, ImageView))
-constructDepthResources Extent2D{width, height} = do
-  let format = FORMAT_D32_SFLOAT
-      imageInfo = zero{ imageType = IMAGE_TYPE_2D
+constructDepthResources extent =
+  constructImageWithView extent ?msaaSamples FORMAT_D32_SFLOAT
+                         IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT IMAGE_ASPECT_DEPTH_BIT
+
+constructColorResources :: (HasPhysicalDevice, HasDevice, HasMsaaSamples)
+                        => Extent2D -> Format -> ResIO ([ReleaseKey], (Image, ImageView))
+constructColorResources extent format = do
+  let usage = IMAGE_USAGE_TRANSFER_SRC_BIT
+          .|. IMAGE_USAGE_TRANSFER_DST_BIT
+          .|. IMAGE_USAGE_SAMPLED_BIT
+          .|. IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+  constructImageWithView extent ?msaaSamples format usage IMAGE_ASPECT_COLOR_BIT
+
+constructImageWithView :: (HasPhysicalDevice, HasDevice)
+                       => Extent2D -> SampleCountFlags -> Format -> ImageUsageFlags -> ImageAspectFlags
+                       -> ResIO ([ReleaseKey], (Image, ImageView))
+constructImageWithView Extent2D{width, height} samples format usage aspectMask = do
+  let imageInfo = zero{ imageType = IMAGE_TYPE_2D
                       , extent = Extent3D{width, height, depth = 1}
                       , mipLevels = 1
                       , arrayLayers = 1
                       , format
                       , tiling = IMAGE_TILING_OPTIMAL
                       , initialLayout = IMAGE_LAYOUT_UNDEFINED
-                      , usage = IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                      , samples = SAMPLE_COUNT_1_BIT
+                      , usage
+                      , samples
                       , sharingMode = SHARING_MODE_EXCLUSIVE
                       }
   (imgKey, image) <- withImage ?device imageInfo Nothing allocate
@@ -297,7 +330,7 @@ constructDepthResources Extent2D{width, height} = do
   let imageViewInfo = zero{ image
                           , viewType = IMAGE_VIEW_TYPE_2D
                           , format
-                          , subresourceRange = zero{ aspectMask = IMAGE_ASPECT_DEPTH_BIT
+                          , subresourceRange = zero{ aspectMask
                                                    , levelCount = 1
                                                    , layerCount = 1
                                                    }
@@ -307,16 +340,17 @@ constructDepthResources Extent2D{width, height} = do
 
 constructImageRelateds :: (HasLogger, HasDevice, HasGraphicsCommandPool,
                            HasGraphicsDescriptorSetLayout, HasGraphicsUniformBufferSize,
-                           HasGraphicsUniformBuffers)
-                       => Extent2D -> Format -> RenderPass -> SwapchainKHR -> ImageView
+                           HasGraphicsUniformBuffers, HasMsaaSamples)
+                       => Extent2D -> Format -> RenderPass -> SwapchainKHR
+                       -> ("colorImageView" ::: ImageView) -> ("depthImageView" ::: ImageView)
                        -> ResIO ([ReleaseKey], Vector ImageRelated)
-constructImageRelateds extent format renderPass swapchain depthIV = do
+constructImageRelateds extent format renderPass swapchain colorIV depthIV = do
   (_, images) <- getSwapchainImagesKHR ?device swapchain
   let count = fromIntegral $ length images
   (cmdBufKey, commandBuffers) <- constructCommandBuffers count
   (dstKey, descriptorSets) <- constructDescriptorSets count
   (releaseKeys, imageRelateds) <- fmap V.unzip . sequence $
-    V.zipWith3 (constructImageRelated extent format renderPass depthIV)
+    V.zipWith3 (constructImageRelated extent format renderPass colorIV depthIV)
                images commandBuffers descriptorSets
 
   logDebug "Created images."
@@ -365,14 +399,15 @@ constructDescriptorSets count = do
     updateDescriptorSets ?device [descriptorWrite] []
   pure (poolKey, descriptorSets)
 
-constructImageRelated :: HasDevice
-                      => Extent2D -> Format -> RenderPass -> ("depthImageView" ::: ImageView)
+constructImageRelated :: (HasDevice, HasMsaaSamples)
+                      => Extent2D -> Format -> RenderPass
+                      -> ("colorImageView" ::: ImageView) -> ("depthImageView" ::: ImageView)
                       -> Image -> CommandBuffer -> DescriptorSet
                       -> ResIO ([ReleaseKey], ImageRelated)
-constructImageRelated extent format renderPass depthIV image commandBuffer descriptorSet = do
+constructImageRelated extent format renderPass colorIV depthIV image commandBuffer descriptorSet = do
   imageInFlight                 <- constructImageInFlight
   (imgViewKey , imageView     ) <- constructImageView image format
-  (framebufKey, framebuffer   ) <- constructFramebuffer extent renderPass imageView depthIV
+  (framebufKey, framebuffer   ) <- constructFramebuffer extent renderPass imageView colorIV depthIV
   pure ([imgViewKey, framebufKey], MkImageRelated{..})
 
 constructImageInFlight :: MonadIO m => m (IORef (Maybe Fence))
@@ -391,13 +426,16 @@ constructImageView image format = do
 
   withImageView ?device ivInfo{image} Nothing allocate
 
-constructFramebuffer :: HasDevice
+constructFramebuffer :: (HasDevice, HasMsaaSamples)
                      => Extent2D -> RenderPass
-                     -> ("imgView" ::: ImageView) -> ("depthImgView" ::: ImageView)
+                     -> ("imgView" ::: ImageView)
+                     -> ("colorImgView" ::: ImageView) -> ("depthImgView" ::: ImageView)
                      -> ResIO (ReleaseKey, Framebuffer)
-constructFramebuffer Extent2D{width, height} renderPass imageView depthImageView = do
+constructFramebuffer Extent2D{width, height} renderPass imageView colorImageView depthImageView = do
   let fbInfo = zero{ renderPass
-                   , attachments = [imageView, depthImageView]
+                   , attachments = if ?msaaSamples == SAMPLE_COUNT_1_BIT
+                       then [imageView, depthImageView]
+                       else [colorImageView, depthImageView, imageView]
                    , width
                    , height
                    , layers = 1

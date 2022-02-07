@@ -93,7 +93,7 @@ setupComputeCommands = do
     for_ (Sized.toList mutables.pipelines) \pipeline -> do
       cmdPipelineBarrier mutables.commandBuffer stageMask stageMask zero [memoryBarrier] [] []
       cmdBindPipeline mutables.commandBuffer PIPELINE_BIND_POINT_COMPUTE pipeline
-      -- TODO get the size by checking local size and number of particles
+      -- TODO make size dependent on shader local size
       let groups = fromIntegral $ -(-(fromIntegral numVertices :: Int) `div` 64)
       cmdDispatch mutables.commandBuffer groups 1 1
 

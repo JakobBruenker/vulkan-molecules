@@ -127,6 +127,8 @@ data GraphicsMutables = MkGraphicsMutables { imageRelateds   :: Vector ImageRela
                                            , renderPass      :: RenderPass
                                            , pipelineLayout  :: PipelineLayout
                                            , pipeline        :: Pipeline
+                                           , colorImage      :: Image
+                                           , colorImageView  :: ImageView
                                            , depthImage      :: Image
                                            , depthImageView  :: ImageView
                                            }
@@ -177,7 +179,9 @@ type HasSwapchainSupport = ( HasSwapchainFormats
                            )
 
 type HasPhysicalDevice = ?physicalDevice :: PhysicalDevice
+type HasMsaaSamples    = ?msaaSamples    :: SampleCountFlags
 type HasPhysicalDeviceRelated = ( HasPhysicalDevice
+                                , HasMsaaSamples
                                 , HasQueueFamilyIndices
                                 , HasSwapchainSupport
                                 )
