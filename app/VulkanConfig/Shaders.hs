@@ -29,6 +29,9 @@ kB = 8.617333262145e-5
 jPereV :: Float
 jPereV = 1.602176634 -- * 10^-19, omitted
 
+jPerkcal :: Float
+jPerkcal = 4.184
+
 avogadro :: Float
 avogadro = 6.02214076 -- * 10^23, omitted
 
@@ -97,30 +100,55 @@ updatePos = Module $ entryPoint @"main" @Compute do
 
 type UpdateAccLocalSize = 64
 
-mass, charge, radius, potential :: Code Word32 -> Code Float
--- muon mass instead of electron
-mass atomType = if atomType == 0 then 0.1134289259 else if atomType == 1 then 1.007276466622 else 0
-charge atomType = if atomType == 0 then -1 else if atomType == 1 then 1 else 0
-radius atomType = if atomType == 0 then 0.5 else if atomType == 1 then 1 else 1
-potential atomType = if atomType == 0 then 10 else if atomType == 1 then 100 else 1
+type AtomType = Word32
+p_bo1_lut, p_bo2_lut, p_bo3_lut, p_bo4_lut, p_bo5_lut, p_bo6_lut
+  :: Code AtomType -> Code AtomType -> Code Float
+p_bo1_lut i j = if i == 1 && j == 1 then -0.016 else
+                if i == 1 && j == 6 then -0.013 else
+                if i == 6 && j == 1 then -0.013 else
+                if i == 6 && j == 6 then -0.097 else 0
+p_bo2_lut i j = if i == 1 && j == 1 then 5.98 else
+                if i == 1 && j == 6 then 7.65 else
+                if i == 6 && j == 1 then 7.65 else
+                if i == 6 && j == 6 then 6.38 else 0
+p_bo3_lut i j = if i == 6 && j == 6 then -0.26 else 0
+p_bo4_lut i j = if i == 6 && j == 6 then 9.37 else 0
+p_bo5_lut i j = if i == 6 && j == 6 then -0.391 else 0
+p_bo6_lut i j = if i == 6 && j == 6 then 16.87 else 0
 
-atomColor :: Code Word32 -> Code (V 3 Float)
+-- TODO: possibly have different values for pi bonds
+de_lut :: Code AtomType -> Code AtomType -> Code Float
+de_lut i j = if i == 1 && j == 1 then 168.4 else
+             if i == 1 && j == 6 then 183.8 else
+             if i == 6 && j == 1 then 183.8 else
+             if i == 6 && j == 6 then 145.2 else 0
+
+mass, charge, radius, potential, rσ_lut, rπ_lut, rππ_lut :: Code AtomType -> Code Float
+mass atomType = if atomType == 1 then 1.007825 else if atomType == 6 then 12 else 0
+charge atomType = if atomType == 1 then 0 else if atomType == 6 then 0 else 0
+radius atomType = if atomType == 1 then 1.2 else if atomType == 6 then 1.7 else 1
+potential atomType = if atomType == 1 then 10 else if atomType == 6 then 100 else 1
+rσ_lut atomType = if atomType == 1 then 0.656 else if atomType == 6 then 1.399 else 1
+rπ_lut atomType = if atomType == 6 then 1.266 else 1
+rππ_lut atomType = if atomType == 6 then 1.236 else 1
+
+atomColor :: Code AtomType -> Code (V 3 Float)
 atomColor atomType =
-  if atomType == 0 then Vec3 0 0.3 0.6 else if atomType == 1 then Vec3 0.6 0 0 else Vec3 1 1 1
+  if atomType == 1 then Vec3 0.9 0.9 0.9 else if atomType == 6 then Vec3 0.3 0.3 0.3 else Vec3 1 0 1
 
 updateAcc :: Module '[Ubo, Posit, Accel', Main (LocalSize UpdateAccLocalSize 1 1)]
 updateAcc = Module $ entryPoint @"main" @Compute do
   -- ubo <- #ubo
   gid <- use @(Name "gl_GlobalInvocationID" :.: Swizzle "x")
   when (gid < Lit numVertices) $ locally do
-    position <- use @(Name "posit" :.: Ar :.: Ix) gid
-    pos <- let' $ view @(Swizzle "xy") position
-    atomType <- let' $ bitcast position.w
+    iprops <- use @(Name "posit" :.: Ar :.: Ix) gid
+    ipos <- let' $ view @(Swizzle "xy") iprops
+    itype <- let' $ bitcast iprops.w
 
     -- mass in Daltons
-    m <- let' $ mass atomType
+    m <- let' $ mass itype
 
-    #acc #= Vec2 0 0
+    #force #= Vec2 0 0
 
     -- -- lennard jones
     -- #i #= 0
@@ -137,12 +165,12 @@ updateAcc = Module $ entryPoint @"main" @Compute do
     --     s6 <- let' $ s ** 6
     --     r <- let' $ distance pos otherPos
     --     r6 <- let' $ r ** 6
-    --     #acc %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
+    --     #force %= (^+^ (e * 24 * s6 * (r6 - 2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
     --     -- only repulsive
-    --     -- #acc %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
+    --     -- #force %= (^+^ (e * 24 * s6 * (-2 * s6) / (r6 * r6 * r)) *^ normalise (otherPos ^-^ pos))
 
     -- -- apply unit conversion factors
-    -- forceLJ <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
+    -- forceLJ <- #force <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
 
     -- -- electric
     -- #i .= 0
@@ -158,35 +186,65 @@ updateAcc = Module $ entryPoint @"main" @Compute do
     --     r <- let' $ distance pos otherPos
     --     r2 <- let' $ r * r
 
-    --     #acc %= (^+^ -(Lit coulomb * q * otherQ / r2) *^ normalise (otherPos ^-^ pos))
+    --     #force %= (^+^ -(Lit coulomb * q * otherQ / r2) *^ normalise (otherPos ^-^ pos))
 
     -- -- apply unit conversion factors
     -- -- we start with kg * m / s^2
     -- -- we want to end up with dalton * angstrom / fs^2
-    -- forceE <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
+    -- forceE <- #force <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
 
     -- assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid ((forceLJ ^+^ forceE) ^/ m)
 
-    #i #= 0
+    #j #= 0
 
-    while (#i <<&>> (< Lit numVertices)) do
-      i <- #i
-      #i %= (+ 1)
-      when (i /= gid) do
-        other <- use @(Name "posit" :.: Ar :.: Ix) i
-        otherPos <- let' $ view @(Swizzle "xy") other
-        otherType <- let' $ bitcast other.w
-        s <- let' $ 1.8 * (radius atomType + radius otherType) / 2
-        e <- let' $ Lit kB * sqrt (potential atomType * potential otherType)
-        s6 <- let' $ s ** 6
-        r <- let' $ distance pos otherPos
-        r6 <- let' $ r ** 6
-        #acc %= (^+^ min 0.01 (0.01 / (r*r)) *^ normalise (otherPos ^-^ pos))
+    while (#j <<&>> (< Lit numVertices)) do
+      j <- #j
+      #j %= (+ 1)
+      when (j /= gid) do
+        jprops <- use @(Name "posit" :.: Ar :.: Ix) j
+        jpos <- let' $ view @(Swizzle "xy") jprops
+        jtype <- let' $ bitcast jprops.w
+
+        r <- let' $ distance ipos jpos
+        dr <- let' $ Vec2 (ipos.x - jpos.x) (ipos.y - jpos.y) ^/ r
+
+        p_bo1 <- let' $ p_bo1_lut itype jtype
+        p_bo2 <- let' $ p_bo2_lut itype jtype
+        p_bo3 <- let' $ p_bo3_lut itype jtype
+        p_bo4 <- let' $ p_bo4_lut itype jtype
+        p_bo5 <- let' $ p_bo5_lut itype jtype
+        p_bo6 <- let' $ p_bo6_lut itype jtype
+
+        rσ <- let' $ (rσ_lut itype + rσ_lut jtype) / 2
+        rπ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
+        rππ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
+
+        let fbo' pa pb ro = exp (pa * (r / ro)**pb)
+            bo'σ = fbo' p_bo1 p_bo2 rσ
+            -- the second shell needs to have electrons for pi bonds to make sense
+            bo'π = if itype > 2 || jtype > 2 then fbo' p_bo3 p_bo4 rπ else 0
+            bo'ππ = if itype > 2 || jtype > 2 then fbo' p_bo5 p_bo6 rππ else 0
+        bo' <- let' $ bo'σ + bo'π + bo'ππ
+
+        let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' pa pb ro
+            dbo'σ = fdbo' p_bo1 p_bo2 rσ
+            -- the second shell needs to have electrons for pi bonds to make sense
+            dbo'π = if itype > 2 || jtype > 2 then fdbo' p_bo3 p_bo4 rπ else 0
+            dbo'ππ = if itype > 2 || jtype > 2 then fdbo' p_bo5 p_bo6 rππ else 0
+        dbo' <- let' $ ((dbo'σ + dbo'π + dbo'ππ) / r) *^ dr
+        -- TODO: this only depends on the radius, not ix and iy individually -
+        -- can we take advantage of that to make the derivative simpler? (1D rather than 2D)
+
+        -- FIXME: why do we have to add the -?
+        de <- let' $ -(de_lut itype jtype)
+
+        #force %= (^+^ -de *^ dbo')
 
     -- apply unit conversion factors
-    -- -- we start with kg * m / s^2
-    -- -- we want to end up with dalton * angstrom / fs^2
-    forceBond <- #acc <<&>> (^/ (Lit jPereV * Lit avogadro * 1e-3))
+    -- we start with (kcal / mole) / Angstrom
+    -- we want to end up with dalton * angstrom / fs^2
+    -- TODO: Not sure this is the right conversion
+    forceBond <- #force <<&>> (^* (Lit jPerkcal / (Lit jPereV * Lit avogadro * 1e-3)))
 
     assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (forceBond ^/ m)
 

@@ -53,8 +53,8 @@ offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 -- 2D position, atom type
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Word32)
 vertexData = Partial.fromJust $ Sized.fromList $ [(0 :: Int)..255] <&> \i'@(fromIntegral -> i) ->
-  vertex (2 * i / 3, 50 + fromIntegral (i' `mod` 4) * 8)
-         (if i < 128 then 0 else 1)
+  vertex (2 * i / 3 + 15, 30 + fromIntegral (i' `mod` 8) * 3)
+         (if i < 128 then 1 else 6)
   where
     vertex (a, b) c = (Sized.fromTuple (a, b, 0), c)
 
