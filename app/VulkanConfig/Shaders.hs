@@ -207,6 +207,7 @@ type VertexDefs =
   '[ "position"  ':-> Input      '[Location 0                ] (V 3 Float)
    , "type"      ':-> Input      '[Location 1                ] Word32
    , "vertColor" ':-> Output     '[Location 0                ] (V 3 Float)
+   , "pointSize" ':-> Output     '[Location 1                ] Float
    , "ubo"       ':-> Uniform    '[DescriptorSet 0, Binding 0] GraphicsUniformInput
    , "main"      ':-> EntryPoint '[                          ] Vertex
    ]
@@ -231,18 +232,23 @@ vertex = shader do
   #gl_Position .= (scaleWin !*! scaleWorld) !*^ pos <!> Vec2 0 1
   color <- let' $ atomColor atomType
   #vertColor .= color
-  #gl_PointSize .= 2 * radius atomType / angstromPerPixel
+  pointSize <- let' $ 2 * radius atomType / angstromPerPixel
+  #pointSize .= pointSize
+  #gl_PointSize .= pointSize
 
 type FragmentDefs =
   '[ "vertColor" ':-> Input      '[Location 0                     ] (V 3 Float)
+   , "pointSize" ':-> Input      '[Location 1                     ] Float
    , "color"     ':-> Output     '[Location 0                     ] (V 4 Float)
    , "main"      ':-> EntryPoint '[OriginUpperLeft, DepthReplacing] Fragment
    ]
 
 fragment :: ShaderModule "main" FragmentShader FragmentDefs _
 fragment = shader do
+  pointSize <- #pointSize
   pCoord <- #gl_PointCoord
-  depth <- let' $ squaredNorm (pCoord ^* 2 ^-^ Vec2 1 1)
+  position <- #gl_SamplePosition
+  depth <- let' $ squaredNorm ((pCoord ^+^ (position ^/ pointSize)) ^* 2 ^-^ Vec2 1 1)
   -- Limit color to a disk with darkened limb
   col <- #vertColor <<&>> (^* (1 - depth))
 
