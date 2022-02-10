@@ -75,7 +75,7 @@ updatePos = Module $ entryPoint @"main" @Compute do
     vel  <- use @(Name "veloc"  :.: Ar :.: Ix :.: Swizzle "xy") gid
     vel' <- let' $ vel ^+^ (dt * 0.5) *^ (acc ^+^ acc')
     -- friction
-    let f v isMin = (if (if isMin then (<) else (>)) v 0 then 0.5 else 1) * abs v
+    let f v isMin = (if (if isMin then (<) else (>)) v 0 then 0.9 else 1) * abs v
     r <- let' $ ubo.worldWidth
     l <- let' 0
     b <- let' $ ubo.worldHeight
@@ -89,7 +89,7 @@ updatePos = Module $ entryPoint @"main" @Compute do
     assign @(Name "veloc" :.: Ar :.: Ix :.: Swizzle "xy") gid (Vec2 velx' vely')
 
     -- -- lazy friction
-    -- vel'' <- let' $ vel' ^* 0.999999
+    -- vel'' <- let' $ Vec2 velx' vely' ^* 0.99998
     -- assign @(Name "veloc" :.: Ar :.: Ix :.: Swizzle "xy") gid vel''
 
     modifying @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") gid
@@ -102,10 +102,14 @@ type UpdateAccLocalSize = 64
 
 type AtomType = Word32
 
--- XXX raised for testing purposes
--- The lowest type that can form π-bonds
-minπType :: AtomType
-minπType = 100
+-- an atom needs to have enough electrons to be able to form π and double-π
+-- bonds
+minπType, minππType :: AtomType
+minπType = 3
+minππType = 4
+
+λ28 :: Code Float
+λ28 = 1.69
 
 p_bo1_lut, p_bo2_lut, p_bo3_lut, p_bo4_lut, p_bo5_lut, p_bo6_lut
   :: Code AtomType -> Code AtomType -> Code Float
@@ -129,14 +133,25 @@ de_lut i j = if i == 1 && j == 1 then 168.4 else
              if i == 6 && j == 1 then 183.8 else
              if i == 6 && j == 6 then 145.2 else 0
 
-mass, charge, radius, potential, rσ_lut, rπ_lut, rππ_lut :: Code AtomType -> Code Float
+-- TODO: We should package these up into a Vec4 for efficiency
+ε_lut, r_vdw_lut, ɑ_lut, ɣw_lut :: Code AtomType -> Code Float
+ε_lut i = if i == 1 then 0.0194 else if i == 6 then 0.0862 else 0
+r_vdw_lut i = if i == 1 then 3.649 else if i == 6 then 3.912 else 1
+ɑ_lut i = if i == 1 then 10.06 else if i == 6 then 10.71 else 10
+ɣw_lut i = if i == 1 then 5.36 else if i == 6 then 1.41 else 1
+
+mass, charge, lj_σ, lj_ε, rσ_lut, rπ_lut, rππ_lut :: Code AtomType -> Code Float
 mass atomType = if atomType == 1 then 1.007825 else if atomType == 6 then 12 else 0
 charge atomType = if atomType == 1 then 0 else if atomType == 6 then 0 else 0
-radius atomType = if atomType == 1 then 1.2 else if atomType == 6 then 1.7 else 1
-potential atomType = if atomType == 1 then 10 else if atomType == 6 then 100 else 1
+lj_σ atomType = if atomType == 1 then 0.5523570 else if atomType == 6 then 1.3541700 else 1
+lj_ε atomType = if atomType == 1 then 4.4778900 else if atomType == 6 then 6.3695300 else 1
 rσ_lut atomType = if atomType == 1 then 0.656 else if atomType == 6 then 1.399 else 1
 rπ_lut atomType = if atomType == 6 then 1.266 else 1
 rππ_lut atomType = if atomType == 6 then 1.236 else 1
+
+lj_shield_power, lj_shield_start :: Code Float
+lj_shield_power = 3
+lj_shield_start = 1.2
 
 atomColor :: Code AtomType -> Code (V 3 Float)
 atomColor atomType =
@@ -167,7 +182,7 @@ updateAcc = Module $ entryPoint @"main" @Compute do
     --     otherPos <- let' $ view @(Swizzle "xy") other
     --     otherType <- let' $ bitcast other.w
     --     s <- let' $ 1.8 * (radius atomType + radius otherType) / 2
-    --     e <- let' $ Lit kB * sqrt (potential atomType * potential otherType)
+    --     e <- let' $ Lit kB * sqrt (lj_potential atomType * lj_potential otherType)
     --     s6 <- let' $ s ** 6
     --     r <- let' $ distance pos otherPos
     --     r6 <- let' $ r ** 6
@@ -201,6 +216,8 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
     -- assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid ((forceLJ ^+^ forceE) ^/ m)
 
+    let fbo' r pa pb ro = exp (pa * (r / ro)**pb)
+
     #j #= 0
 
     while (#j <<&>> (< Lit numVertices)) do
@@ -211,8 +228,9 @@ updateAcc = Module $ entryPoint @"main" @Compute do
         jpos <- let' $ view @(Swizzle "xy") jprops
         jtype <- let' $ bitcast jprops.w
 
-        r <- let' $ distance ipos jpos
-        dr <- let' $ Vec2 (ipos.x - jpos.x) (ipos.y - jpos.y) ^/ r
+        -- set minimum r of for numerical stability in edge cases that
+        -- shouldn't occur
+        r <- let' $ max 0.2 (distance ipos jpos)
 
         p_bo1 <- let' $ p_bo1_lut itype jtype
         p_bo2 <- let' $ p_bo2_lut itype jtype
@@ -225,34 +243,71 @@ updateAcc = Module $ entryPoint @"main" @Compute do
         rπ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
         rππ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
 
-        let fbo' pa pb ro = exp (pa * (r / ro)**pb)
-            bo'σ = fbo' p_bo1 p_bo2 rσ
-            bo'π = if itype >= Lit minπType && jtype >= Lit minπType then fbo' p_bo3 p_bo4 rπ else 0
-            bo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fbo' p_bo5 p_bo6 rππ else 0
+        let bo'σ = fbo' r p_bo1 p_bo2 rσ
+            bo'π = if itype >= Lit minπType && jtype >= Lit minπType then fbo' r p_bo3 p_bo4 rπ else 0
+            bo'ππ = if itype >= Lit minππType && jtype >= Lit minπType then fbo' r p_bo5 p_bo6 rππ else 0
         bo' <- let' $ bo'σ + bo'π + bo'ππ
 
-        let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' pa pb ro
+        dr <- let' $ Vec2 (ipos.x - jpos.x) (ipos.y - jpos.y) ^/ r
+
+        let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' r pa pb ro
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
             dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
             dbo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo5 p_bo6 rππ else 0
-        dbo' <- let' $ ((dbo'σ + dbo'π + dbo'ππ) / r) *^ dr
-        -- TODO: this only depends on the radius, not ix and iy individually -
-        -- can we take advantage of that to make the derivative simpler? (1D rather than 2D)
+        dbo' <- let' $ ((dbo'σ + dbo'π + dbo'ππ) / r)
+        -- dbo'v <- let' $ dbo' *^ dr
 
-        -- FIXME: why do we have to add the -?
-        -- Why are they being repelled without it? Why are they being repelled with it?
-        de <- let' $ (de_lut itype jtype)
+        -- converting kcal/mol into eV
+        de <- let' $ (de_lut itype jtype) * 0.0434
+        -- TODO figure out proper conversion factor
+        -- conv <- let' 0.1
 
-        -- FIXME: why is it numerically unstable? It really shouldn't be
-        #force %= (^+^ -de *^ dbo')
+        -- #force %= (^+^ (conv * -de) *^ dbo')
 
-    -- apply unit conversion factors
-    -- we start with (kcal / mole) / Angstrom
-    -- we want to end up with dalton * angstrom / fs^2
-    -- TODO: Not sure this is the right conversion
-    forceBond <- #force <<&>> (^* (Lit jPerkcal / (Lit jPereV * Lit avogadro * 1e-3)))
+        -- -- This doesn't quite do what I want, using LJ for now
+        -- r_vdw <- let' $ (r_vdw_lut itype + r_vdw_lut jtype) / 2
+        -- ε <- let' $ (ε_lut itype + ε_lut jtype) / 2
+        -- ɑ <- let' $ (ɑ_lut itype + ɑ_lut jtype) / 2
+        -- ɣw <- let' $ (ɣw_lut itype + ɣw_lut jtype) / 2
 
-    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (forceBond ^/ m)
+        -- f13' <- let' $ r**λ28 + ɣw**(-λ28)
+        -- f13 <- let' $ f13'**(1/λ28)
+        -- df13 <- let' $ (f13'**(1/λ28 - 1) * r**(λ28 - 1)) *^ dr
+        -- df14' <- let' $ exp (ɑ * (1 - f13 / r_vdw))
+        -- df14a <- let' $ (-ɑ * df14' / r_vdw) *^ df13
+        -- df14b <- let' $ (-ɑ * 0.5 * df14'**0.5 / r_vdw) *^ df13
+        -- dEvdW <- let' $ ε *^ df14a ^-^ 2 *^ df14b
+
+        -- -- apply unit conversion factors
+        -- -- we start with (kcal / mole) / Angstrom
+        -- -- we want to end up with dalton * angstrom / fs^2
+        -- -- TODO: Not sure this is the right conversion
+        -- #force %= (^-^ (Lit jPerkcal *^ dEvdW) ^/ (Lit jPereV * Lit avogadro * 1e-3))
+
+        -- potential valley gets closer to nucleus as bond order increases
+        -- unchanged at BO = 0, reduced by ~50% at BO = 1, and reduced by ~60% at BO = 3
+        σ0 <- let' $ (lj_σ itype + lj_σ jtype) / 2
+        σ <- let' $ σ0 * (0.6 * 0.17**bo' + 0.4)
+        ε0 <- let' $ sqrt (lj_ε itype * lj_ε jtype)
+        ε <- let' $ ε0 + de * bo'
+
+        dσ <- let' $ σ0 * 0.6 * -0.177196 * 0.17**bo' * dbo'
+        dε <- let' $ de * dbo'
+
+        -- σ6 <- let' $ σ ** 6
+        -- r6 <- let' $ r ** 6
+        -- force <- let' $ (ε * 24 * σ6 * (r6 - 2 * σ6) / (r6 * r6 * r)) *^ normalise (jpos ^-^ ipos)
+        -- XXX not sure the sign is right, but it seems to work
+        force <- let' $ normalise (jpos ^-^ ipos) ^*
+          -((4 * σ**5 / r**13) *
+            (r * σ * (r**6 - σ**6) * dε + 6 * ε * (r**6 - 2 * σ**6) * (r * dσ - σ)))
+
+        -- Unit conversion:
+        -- We have eV/Angstrom, we want Dalton * Angstrom * fs^-2
+        #force %= (^+^ 0.00964853322 *^ force)
+
+    force <- #force
+    assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (force ^/ m)
 
 type VertexInput =
   '[ Slot 0 0 ':-> V 2 Float
@@ -296,7 +351,7 @@ vertex = shader do
   #gl_Position .= (scaleWin !*! scaleWorld) !*^ pos <!> Vec2 0 1
   color <- let' $ atomColor atomType
   #vertColor .= color
-  pointSize <- let' $ 2 * radius atomType / angstromPerPixel
+  pointSize <- let' $ 2**(1/6) * lj_σ atomType / angstromPerPixel
   #pointSize .= pointSize
   #gl_PointSize .= pointSize
 

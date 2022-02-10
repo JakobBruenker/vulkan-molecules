@@ -36,7 +36,7 @@ type instance ComputeStorageBufferCount = 3
 
 computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
 computeStorageData = Sized'.replicate . MkStorageData $
-  Sized.replicate @(4 * SizeFloat * NumVertices) @Float 0
+  Sized.replicate @(4 * SizeFloat * NumVertices) @Float 0 Sized.// [(0, 1), (1, 0)]
 
 type NumVertices = 256
 type Size0 = 3
@@ -52,9 +52,9 @@ offset1 = floatSize * (numVertexEntries - integralNatVal @Size1)
 
 -- 2D position, atom type
 vertexData :: Sized.Vector NumVertices (Sized.Vector Size0 Float, Word32)
-vertexData = Partial.fromJust $ Sized.fromList $ [(0 :: Int)..255] <&> \i'@(fromIntegral -> i) ->
-  vertex (2 * i / 3 + 15, 30 + fromIntegral (i' `mod` 8) * 3)
-         (if i < 128 then 1 else 6)
+vertexData = Partial.fromJust $ Sized.fromList $ [(0 :: Int)..integralNatVal @NumVertices - 1] <&>
+  \i'@(fromIntegral -> i) ->
+    vertex (2.2 * i / 3 + 3, 10 + fromIntegral (i' `mod` 12) * 8) (if i' `mod` 2 == 0 then 1 else 6)
   where
     vertex (a, b) c = (Sized.fromTuple (a, b, 0), c)
 
