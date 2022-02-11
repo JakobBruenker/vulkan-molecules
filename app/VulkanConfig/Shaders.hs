@@ -149,6 +149,9 @@ rσ_lut atomType = if atomType == 1 then 0.656 else if atomType == 6 then 1.399 
 rπ_lut atomType = if atomType == 6 then 1.266 else 1
 rππ_lut atomType = if atomType == 6 then 1.236 else 1
 
+valence :: Code AtomType -> Code Int32
+valence atomType = if atomType == 1 then 1 else if atomType == 6 then 4 else 0
+
 lj_shield_power, lj_shield_start :: Code Float
 lj_shield_power = 3
 lj_shield_start = 1.2
@@ -220,6 +223,9 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
     #j #= 0
 
+    #_Δ' #= -(fromIntegral $ valence itype)
+    #dΔ' #= Vec2 0 0
+
     while (#j <<&>> (< Lit numVertices)) do
       j <- #j
       #j %= (+ 1)
@@ -249,6 +255,45 @@ updateAcc = Module $ entryPoint @"main" @Compute do
         bo' <- let' $ bo'σ + bo'π + bo'ππ
 
         dr <- let' $ Vec2 (ipos.x - jpos.x) (ipos.y - jpos.y) ^/ r
+
+        let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' r pa pb ro
+            dbo'σ = fdbo' p_bo1 p_bo2 rσ
+            dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
+            dbo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo5 p_bo6 rππ else 0
+        dbo' <- let' $ ((dbo'σ + dbo'π + dbo'ππ) / r) *^ dr
+
+        #_Δ' %= (+ bo')
+        #dΔ' %= (^+^ dbo')
+
+    #j .= 0
+
+    while (#j <<&>> (< Lit numVertices)) do
+      j <- #j
+      #j %= (+ 1)
+      when (j /= gid) do
+        jprops <- use @(Name "posit" :.: Ar :.: Ix) j
+        jpos <- let' $ view @(Swizzle "xy") jprops
+        jtype <- let' $ bitcast jprops.w
+
+        -- set minimum r of for numerical stability in edge cases that
+        -- shouldn't occur
+        r <- let' $ max 0.2 (distance ipos jpos)
+
+        p_bo1 <- let' $ p_bo1_lut itype jtype
+        p_bo2 <- let' $ p_bo2_lut itype jtype
+        p_bo3 <- let' $ p_bo3_lut itype jtype
+        p_bo4 <- let' $ p_bo4_lut itype jtype
+        p_bo5 <- let' $ p_bo5_lut itype jtype
+        p_bo6 <- let' $ p_bo6_lut itype jtype
+
+        rσ <- let' $ (rσ_lut itype + rσ_lut jtype) / 2
+        rπ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
+        rππ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
+
+        let bo'σ = fbo' r p_bo1 p_bo2 rσ
+            bo'π = if itype >= Lit minπType && jtype >= Lit minπType then fbo' r p_bo3 p_bo4 rπ else 0
+            bo'ππ = if itype >= Lit minππType && jtype >= Lit minπType then fbo' r p_bo5 p_bo6 rππ else 0
+        bo' <- let' $ bo'σ + bo'π + bo'ππ
 
         let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' r pa pb ro
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
