@@ -169,7 +169,7 @@ initPhysicalDevice = do
   pure dict
   where
     score :: (MonadIO m, HasPhysicalDevice) => m Integer
-    score = (bool 1000 0 . (PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType <$>) $
+    score = (bool 0 1000 . (PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType <$>) $
       getPhysicalDeviceProperties ?physicalDevice
 
     findQueueFamilies :: (MonadResource m, HasLogger, HasPhysicalDevice)
