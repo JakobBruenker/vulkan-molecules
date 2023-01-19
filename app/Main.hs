@@ -40,7 +40,8 @@ import Types
 main :: IO ()
 main = do
   opts <- execParser (info (options <**> helper) fullDesc)
-  logOptions <- logOptionsHandle stderr (optVerbose opts)
+  -- TODO make color configurable, or maybe check docs on hIsTerminalDevice
+  logOptions <- setLogUseColor True <$> logOptionsHandle stderr (optVerbose opts)
   withLogFunc logOptions \logFunc -> do
     let ?logFunc = logFunc
     Dict <- pure $ mkConfig opts
@@ -77,10 +78,13 @@ mouseButtonCallback :: HasVulkanResources => GLFW.MouseButtonCallback
 mouseButtonCallback _ _ state _ | state == GLFW.MouseButtonState'Pressed = updateComputeUniformBuffer
                                 | otherwise                              = pure ()
 
-keyCallback :: HasContinueCompute => GLFW.KeyCallback
-keyCallback _ key _ GLFW.KeyState'Pressed _ | GLFW.Key'Space <- key =
-  -- basically, fill the MVar if it was empty and vice versa
-  unlessM (tryPutMVar ?continueCompute ()) $ takeMVar ?continueCompute
+keyCallback :: (HasWindow, HasContinueCompute) => GLFW.KeyCallback
+keyCallback _ key _ GLFW.KeyState'Pressed _ = case key of
+  GLFW.Key'Space ->
+    -- basically, fill the MVar if it was empty and vice versa
+    unlessM (tryPutMVar ?continueCompute ()) $ takeMVar ?continueCompute
+  GLFW.Key'Escape -> GLFW.setWindowShouldClose ?window True
+  _ -> pure ()
 keyCallback _ _ _ _ _ = pure ()
 
 data ShouldRecreateSwapchain = Don'tRecreate

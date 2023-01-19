@@ -87,9 +87,20 @@ initWindow = do
   when (?fullscreen && isNothing monitor) $
     logWarn "Couldn't find desired monitor. Using windowed mode."
   let actuallyFullscreen = ?fullscreen && isJust monitor
-  (xPos, yPos, width, height) <- if
-    | actuallyFullscreen, Just mon <- monitor -> liftIO $ GLFW.getMonitorWorkarea mon
-    | otherwise -> pure (0, 0, fromIntegral ?windowWidth, fromIntegral ?windowHeight)
+  logDebug $ "Fullscreen: " <> displayShow actuallyFullscreen
+  ((xPos, yPos), (width, height)) <- fromMaybe
+    ((0, 0), (fromIntegral ?windowWidth, fromIntegral ?windowHeight)) <$> if
+    | actuallyFullscreen, Just mon <- monitor -> do
+      videoMode <- liftIO $ GLFW.getVideoMode mon
+      if | Just vm <- videoMode -> do
+           pos <- liftIO $ GLFW.getMonitorPos mon
+           pure $ Just (pos, (vm.videoModeWidth, vm.videoModeHeight))
+         | otherwise -> do
+           logWarn "Couldn't get video mode. Using default window size."
+           pure Nothing
+    | otherwise -> pure Nothing
+  logDebug $ "Window position: " <> displayShow (xPos, yPos)
+  logDebug $ "Window size: " <> displayShow (width, height)
 
   (_, window) <- allocate
     do traverse_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI

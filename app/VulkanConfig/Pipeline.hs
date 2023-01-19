@@ -26,9 +26,11 @@ import VulkanSetup.Types
 import Utils
 
 -- in Angstrom
+-- TODO should this really be in Pipeline.hs?
 worldWidth, worldHeight :: Float
 worldWidth = 192
-worldHeight = 108
+worldHeight = 192 * 10 / 16 -- TODO why does the screen turn black after a bit? NaN?
+-- worldHeight = 108
 
 type SizeFloat = 4
 
