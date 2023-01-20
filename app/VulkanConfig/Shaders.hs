@@ -441,9 +441,10 @@ shaderPaths = Dict
 
 compileAllShaders :: IO ()
 compileAllShaders = sequence_
-  [ compileTo vertexShaderPath spirv vertex
-  , compileTo fragmentShaderPath spirv fragment
-  , compileTo updatePosPath spirv updatePos
-  , compileTo updateAccPath spirv updateAcc
+  [
+  -- [ compileTo vertexShaderPath spirv vertex
+  -- , compileTo fragmentShaderPath spirv fragment
+  -- , compileTo updatePosPath spirv updatePos
+  [ compileTo updateAccPath spirv updateAcc
   ]
   where spirv = [SPIRV $ Version 1 3]

@@ -37,6 +37,7 @@ import Options
 import Utils
 import Types
 
+-- TODO use low latency garbage collector
 main :: IO ()
 main = do
   opts <- execParser (info (options <**> helper) fullDesc)

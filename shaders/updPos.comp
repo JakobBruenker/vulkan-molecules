@@ -1,0 +1,64 @@
+#version 460
+// TODO pass this in from outside?
+#define NUM_VERTICES 256
+
+layout(local_size_x = 64) in;
+layout(local_size_y = 1) in;
+layout(local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform Config{
+    float dt;
+    float worldWidth;
+    float worldHeight;
+} ubo;
+
+// The fourth value of "posit" is actually the type encoded as an unsigned integer
+layout(set = 1, binding = 0) buffer Position{
+    vec4 array[];
+} posit;
+
+layout(set = 1, binding = 1) buffer Velocity{
+    vec4 array[];
+} veloc;
+
+layout(set = 1, binding = 2) buffer Acceleration{
+    vec4 array[];
+} accel;
+
+layout(set = 1, binding = 3) buffer Acceleration_{
+    vec4 array[];
+} accel_;
+
+float f(float v, bool isMin) {
+    return ((isMin ? v < .0 : v > .0) ? .9 : 1) * abs(v);
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid < NUM_VERTICES) {
+        float dt = ubo.dt;
+
+        vec2 pos = posit.array[gid].xy;
+        vec2 acc = accel.array[gid].xy;
+        vec2 acc_ = accel_.array[gid].xy;
+        vec2 vel = veloc.array[gid].xy;
+        vec2 vel_ = vel + (acc + acc_) * .5 * dt;
+        // friction
+        float r = ubo.worldWidth;
+        float l = 0;
+        float b = ubo.worldHeight;
+        float t = 0;
+        float velx_ = pos.x < l ? f(vel_.x, true) : pos.x > r ? -f(vel_.x, false) : vel_.x;
+        float vely_ = pos.y < t ? f(vel_.y, true) : pos.y > b ? -f(vel_.y, false) : vel_.y;
+        veloc.array[gid].xy = vec2(velx_, vely_);
+
+        // lazy friction
+        // vec2 vel__ = vec2(velx_, vely_) * 0.99998;
+        // veloc.array[gid].xy = vel__;
+
+        posit.array[gid].xy += dt * vel_ + .5 * dt * dt * acc_;
+
+        accel.array[gid].xy = acc_;
+        accel_.array[gid].xy = vec2(0);
+    }
+}
