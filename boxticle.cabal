@@ -31,9 +31,7 @@ executable boxticle
                       VulkanSetup.Types
                       VulkanSetup.Internal.Types
                       VulkanSetup.Utils
-                      VulkanConfig.Shaders
                       VulkanConfig.Pipeline
-                      VulkanConfig.FIRUtils
                       Utils
                       Options
                       Types
@@ -51,11 +49,9 @@ executable boxticle
                       , extra ^>=1.7.9
                       , vector-sized ^>= 1.4.0
                       , finite-typelits ^>= 0.1.4.2
-                      , fir ^>= 0.0.1.0
                       , resourcet ^>= 1.2.4.3
                       , storable-tuple ^>= 0.0.3
                       , monad-loops ^>= 0.4.3
-                      , haskus-utils-variant ^>= 3.2.1
     hs-source-dirs:     app
     default-language:   GHC2021
     ghc-options:        -Wall

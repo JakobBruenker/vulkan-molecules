@@ -3,12 +3,14 @@
 module Main (main) where
 
 import RIO hiding (logDebug, logInfo, logWarn, logError)
+import RIO.FilePath ((</>))
 
 import Options.Applicative ((<**>), fullDesc, info, execParser, helper)
 import Control.Monad.Trans.Resource (runResourceT, ResIO)
 import Data.Finite (Finite, natToFinite)
 import Data.Tuple (swap)
-import qualified Data.Vector.Storable.Sized as Sized
+import Data.Vector.Storable.Sized qualified as SSized
+import Data.Vector.Sized qualified as Sized
 import Control.Monad.Extra (fromMaybeM, whenJust)
 import Control.Lens (ix, (??), both)
 import Foreign (castPtr, with, copyBytes)
@@ -28,7 +30,6 @@ import Vulkan.Exception
 import Vulkan.CStruct.Extends
 import Vulkan.Zero
 
-import VulkanConfig.Shaders
 import VulkanConfig.Pipeline as PL
 import VulkanSetup.Initialize
 import VulkanSetup.GraphicsMutables
@@ -52,7 +53,6 @@ main = do
 
 runApp :: (HasLogger, HasConfig) => IO ()
 runApp = runResourceT do
-  liftIO compileAllShaders
   logDebug "Compiled shaders."
 
   Dict <- pure shaderPaths
@@ -74,6 +74,21 @@ runApp = runResourceT do
   mainLoop
 
   logInfo "Goodbye!"
+
+type instance ComputeShaderCount = 2
+
+shadersPath, vertexShaderPath, fragmentShaderPath, updatePosPath, updateAccPath :: FilePath
+shadersPath = "shaders"
+vertexShaderPath   = shadersPath </> "vert.spv"
+fragmentShaderPath = shadersPath </> "frag.spv"
+updatePosPath      = shadersPath </> "updPos.spv"
+updateAccPath      = shadersPath </> "updAcc.spv"
+
+shaderPaths :: Dict HasShaderPaths
+shaderPaths = Dict
+  where ?vertexShaderPath = vertexShaderPath
+        ?fragmentShaderPath = fragmentShaderPath
+        ?computeShaderPaths = Sized.fromTuple (updatePosPath, updateAccPath)
 
 mouseButtonCallback :: HasVulkanResources => GLFW.MouseButtonCallback
 mouseButtonCallback _ _ state _ | state == GLFW.MouseButtonState'Pressed = updateComputeUniformBuffer
@@ -147,8 +162,8 @@ drawFrame :: HasVulkanResources => Finite MaxFramesInFlight -> ResIO ShouldRecre
 drawFrame currentFrame = do
   mutables <- readRes ?graphicsMutables
 
-  let ixSync :: Storable a => Sized.Vector MaxFramesInFlight a -> a
-      ixSync = view $ Sized.ix currentFrame
+  let ixSync :: Storable a => SSized.Vector MaxFramesInFlight a -> a
+      ixSync = view $ SSized.ix currentFrame
 
   _result <- waitForFencesSafe ?device [ixSync ?inFlight] True maxBound
 

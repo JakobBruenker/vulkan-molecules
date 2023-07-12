@@ -1,5 +1,7 @@
 #version 460
 // TODO pass this in from outside?
+// worst case, could pass it in as uniform -- probably want to do that anyway
+// because why in the world would you hardcode the number of partitcles
 #define NUM_VERTICES 256
 
 layout(local_size_x = 64) in;
@@ -11,6 +13,8 @@ layout(set = 0, binding = 0) uniform Config{
     float worldWidth;
     float worldHeight;
 } ubo;
+
+// TODO would it make sense to just use a single buffer for all of these?
 
 // The fourth value of "posit" is actually the type encoded as an unsigned integer
 layout(set = 1, binding = 0) buffer Position{
