@@ -99,7 +99,7 @@ setupComputeCommands = do
       let groups = fromIntegral $ -(-(fromIntegral numVertices :: Int) `div` 64)
       cmdDispatch mutables.commandBuffer groups 1 1
 
-  logDebug "Set up compute commands"
+  logDebug "Set up compute commands."
 
 setupGraphicsCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
 setupGraphicsCommands = do
