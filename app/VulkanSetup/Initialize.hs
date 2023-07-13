@@ -160,9 +160,9 @@ initPhysicalDevice = do
       do throwIO VkNoPhysicalDevices
       \(toList -> physDevs) -> do
         let lds = length physDevs
-        logDebug . (("Found " <> display lds <> plural " physical device" lds <> ": ") <>)
-          =<< displayBytesUtf8 . B.intercalate ", " <$>
-                traverse (fmap deviceName <$> getPhysicalDeviceProperties) physDevs
+        logDebug . (("Found " <> display lds <> plural " physical device" lds <> ": ") <>) .
+          displayBytesUtf8 . B.intercalate ", " 
+          =<< traverse (fmap deviceName <$> getPhysicalDeviceProperties) physDevs
 
         fmap ((\(Arg _ x) -> x) . getMax . sconcat) .
           fromMaybeM (throwIO VkNoSuitableDevices) . fmap NE.nonEmpty $
@@ -175,8 +175,8 @@ initPhysicalDevice = do
               Max . flip Arg Dict <$> score
 
   case dict of
-    Dict -> logDebug . ("Picked device " <>) . (<> ".") =<<
-      displayBytesUtf8 . deviceName <$> getPhysicalDeviceProperties ?physicalDevice
+    Dict -> logDebug . ("Picked device " <>) . (<> ".") . displayBytesUtf8 . deviceName =<<
+      getPhysicalDeviceProperties ?physicalDevice
   pure dict
   where
     score :: (MonadIO m, HasPhysicalDevice) => m Integer
