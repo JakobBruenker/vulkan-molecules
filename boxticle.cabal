@@ -28,6 +28,7 @@ executable boxticle
     other-modules:    VulkanSetup.GraphicsMutables
                       VulkanSetup.ComputeMutables
                       VulkanSetup.Initialize
+                      VulkanSetup.Shaders
                       VulkanSetup.Types
                       VulkanSetup.Types.Unsafe
                       VulkanSetup.Utils
