@@ -186,13 +186,13 @@ initPhysicalDevice = do
     findQueueFamilies :: (MonadResource m, HasLogger, HasPhysicalDevice)
                       => MaybeT m (Dict HasQueueFamilyIndices)
     findQueueFamilies = do
-      devName <- displayBytesUtf8 . deviceName <$> getPhysicalDeviceProperties ?physicalDevice
+      dName <- devName
       props <- getPhysicalDeviceQueueFamilyProperties ?physicalDevice
 
       let findByFlag flag name = do
             Just queue <- pure $ fromIntegral <$>
               V.findIndex (\p -> queueFlags p .&. flag > zero) props
-            logResult name queue devName
+            logResult name queue dName
             pure queue
 
       graphics <- findByFlag QUEUE_GRAPHICS_BIT "graphics"
@@ -200,7 +200,7 @@ initPhysicalDevice = do
       let indices = ZipList (toList props) *> [0..]
           surfaceSupport = getPhysicalDeviceSurfaceSupportKHR ?physicalDevice ?? ?surface
       Just present <- fmap fst . find snd <$> (traverse . traverseToSnd) surfaceSupport indices
-      logResult "present" present devName
+      logResult "present" present dName
 
       compute <- findByFlag QUEUE_COMPUTE_BIT "compute"
 
@@ -209,16 +209,16 @@ initPhysicalDevice = do
           ?computeQueueFamily  = compute
       pure Dict
       where
-        logResult name queueIndex devName = logDebug $
+        logResult name queueIndex dName = logDebug $
           "Found " <> name <> " queue family (index " <> display queueIndex <> ") on " <>
-          devName <> "."
+          dName <> "."
 
     checkDeviceExtensionSupport :: (MonadIO m, HasPhysicalDevice) => m Bool
     checkDeviceExtensionSupport = do
       exts <- fmap extensionName . snd <$> enumerateDeviceExtensionProperties ?physicalDevice Nothing
       let yes = V.all (`elem` exts) deviceExtensions
-      devName <- displayBytesUtf8 . deviceName <$> getPhysicalDeviceProperties ?physicalDevice
-      logDebug $ devName <> " " <> bool "doesn't support" "supports" yes <>
+      dName <- devName
+      logDebug $ dName <> " " <> bool "doesn't support" "supports" yes <>
                  " all extensions in " <> displayShow deviceExtensions <> "."
       pure yes
 
@@ -244,8 +244,12 @@ initPhysicalDevice = do
                           .&. desired /= zero
                          then desired
                          else SAMPLE_COUNT_1_BIT
-      logDebug $ "Using " <> displayShow ?msaaSamples <> "."
+      dName <- devName
+      logDebug $ "Using " <> displayShow ?msaaSamples <> " for MSAA on " <> dName <> "."
       pure Dict
+
+    devName :: (MonadIO m, HasPhysicalDevice) => m Utf8Builder
+    devName = displayBytesUtf8 . deviceName <$> getPhysicalDeviceProperties ?physicalDevice
 
 initDevice :: (HasLogger, HasPhysicalDeviceRelated, HasValidationLayers)
            => ResIO (Dict HasDevice)
