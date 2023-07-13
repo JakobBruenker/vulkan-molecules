@@ -29,7 +29,7 @@ executable boxticle
                       VulkanSetup.ComputeMutables
                       VulkanSetup.Initialize
                       VulkanSetup.Types
-                      VulkanSetup.Internal.Types
+                      VulkanSetup.Types.Unsafe
                       VulkanSetup.Utils
                       VulkanConfig.Shaders
                       VulkanConfig.Pipeline
