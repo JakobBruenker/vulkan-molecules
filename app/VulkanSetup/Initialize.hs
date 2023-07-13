@@ -39,7 +39,7 @@ import Vulkan.Exception
 
 
 import Utils
-import VulkanSetup.Internal.Types(GLFWToken(UnsafeMkGLFWToken))
+import VulkanSetup.Types.Unsafe(GLFWToken(UnsafeMkGLFWToken))
 import VulkanSetup.GraphicsMutables
 import VulkanSetup.Utils
 import VulkanSetup.Types

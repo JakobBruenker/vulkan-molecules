@@ -3,7 +3,7 @@
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module VulkanSetup.Internal.Types where
+module VulkanSetup.Types.Unsafe where
 
 import RIO
 import RIO.ByteString qualified as B

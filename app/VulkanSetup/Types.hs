@@ -1,5 +1,5 @@
 module VulkanSetup.Types (
-  module VulkanSetup.Internal.Types,
+  module VulkanSetup.Types.Unsafe,
   ) where
 
-import VulkanSetup.Internal.Types hiding (UnsafeMkGLFWToken, MkResource, releaseKeys, resources)
+import VulkanSetup.Types.Unsafe hiding (UnsafeMkGLFWToken, MkResource, releaseKeys, resources)
