@@ -250,12 +250,12 @@ void main() {
 
         // XXX JB not sure the sign is right, but it seems to work
         const vec2 force_ = normalize(jpos - ipos) *
-            -((4 * pow(sigma, 5) / pow(r, 13)) *
-              (r * sigma * (pow(r, 6) - pow(sigma, 6)) * deps + 6 * eps * (pow(r, 6) - 2 * pow(sigma, 6)) * (r * dsigma - sigma)));
+            (-((4 * pow(sigma, 5) / pow(r, 13)) *
+               (r * sigma * (pow(r, 6) - pow(sigma, 6)) * deps + 6 * eps * (pow(r, 6) - 2 * pow(sigma, 6)) * (r * dsigma - sigma))));
 
         // Unit conversion:
         // We have eV/Angstrom, we want Dalton * Angstrom * fs^-2
-        force += 0.00964853322 * force_;
+        force += .00964853322 * force_;
     }
 
     accel.array[gid].xy = force / m;
