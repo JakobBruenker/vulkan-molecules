@@ -1,0 +1,264 @@
+#version 460
+
+// an atom needs to have enough electrons to be able to form pi and double-pi bonds
+#define min_pi_type (3)
+#define min_pi_pi_type (4)
+#define l28 (1.69)
+#define NUM_VERTICES (256)
+
+layout(local_size_x = 64) in;
+layout(local_size_y = 1) in;
+layout(local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform Config{
+    float dt;
+    float worldWidth;
+    float worldHeight;
+} ubo;
+
+// TODO would it make sense to just use a single buffer for all of these?
+
+// The fourth value of "posit" is actually the type encoded as an unsigned integer
+layout(set = 1, binding = 0) buffer Position{
+    vec4 array[];
+} posit;
+
+layout(set = 1, binding = 1) buffer Velocity{
+    vec4 array[];
+} veloc;
+
+layout(set = 1, binding = 2) buffer Acceleration{
+    vec4 array[];
+} accel;
+
+layout(set = 1, binding = 3) buffer Acceleration_{
+    vec4 array[];
+} accel_;
+
+// TODO presumably we can come up with a way to automatically compute this from C-C values rather than writing down the full n^2/2 values
+float p_bo1_lut(uint i, uint j) {
+    return
+        i == 1 && j == 1 ? -0.016 :
+        i == 1 && j == 6 ? -0.013 :
+        i == 6 && j == 1 ? -0.013 :
+        i == 6 && j == 6 ? -0.097 :
+        0;
+}
+
+float p_bo2_lut(uint i, uint j) {
+    return
+        i == 1 && j == 1 ? 5.98 :
+        i == 1 && j == 6 ? 7.65 :
+        i == 6 && j == 1 ? 7.65 :
+        i == 6 && j == 6 ? 6.38 :
+        0;
+}
+
+float p_bo3_lut(uint i, uint j) {
+    return i == 6 && j == 6 ? -0.26 : 0;
+}
+
+float p_bo4_lut(uint i, uint j) {
+    return i == 6 && j == 6 ? 9.37 : 0;
+}
+
+float p_bo5_lut(uint i, uint j) {
+    return i == 6 && j == 6 ? -0.391 : 0;
+}
+
+float p_bo6_lut(uint i, uint j) {
+    return i == 6 && j == 6 ? 16.87 : 0;
+}
+
+float de_lut(uint i, uint j) {
+    return
+        i == 1 && j == 1 ? 168.4 :
+        i == 1 && j == 6 ? 183.8 :
+        i == 6 && j == 1 ? 183.8 :
+        i == 6 && j == 6 ? 145.2 :
+        0;
+}
+
+float eps_lut(uint i) {
+    return i == 1 ? 0.0194 : i == 6 ? 0.0862 : 0;
+}
+
+float r_vdw_lut(uint i) {
+    return i == 1 ? 3.649 : i == 6 ? 3.912 : 0;
+}
+
+float alpha_lut(uint i) {
+    return i == 1 ? 10.06 : i == 6 ? 10.71 : 0;
+}
+
+float gamma_w_lut(uint i) {
+    return i == 1 ? 5.36 : i == 6 ? 1.41 : 0;
+}
+
+float mass(uint i) {
+    return i == 1 ? 1.007825 : i == 6 ? 12 : 0;
+}
+
+float charge(uint i) {
+    return i == 1 ? 0 : i == 6 ? 0 : 0;
+}
+
+float lj_sigma(uint i) {
+    return i == 1 ? 0.5523570 : i == 6 ? 1.3541700 : 0;
+}
+
+float lj_eps(uint i) {
+    return i == 1 ? 4.4778900 : i == 6 ? 6.3695300 : 0;
+}
+
+float r_sigma_lut(uint i) {
+    return i == 1 ? 0.656 : i == 6 ? 1.399 : 0;
+}
+
+float r_pi_lut(uint i) {
+    return i == 6 ? 1.266 : 1;
+}
+
+float r_pi_pi_lut(uint i) {
+    return i == 6 ? 1.236 : 1;
+}
+
+float valence(uint i) {
+    return i == 1 ? 1 : i == 6 ? 4 : 0;
+}
+
+float lj_shield_power = 3;
+float lj_shield_start = 1.2;
+
+float fbo_(float r, float pa, float pb, float ro) {
+    return exp(pa * pow((r / ro), pb));
+}
+
+// TODO for peace of mind just double check that this is the correct derivative of fbo_
+float fdbo_(float r, float pa, float pb, float ro) {
+    return pa * pb * pow((r / ro), pb) * fbo_(r, pa, pb, ro);
+}
+
+void main() {
+    const uint gid = gl_GlobalInvocationID.x;
+    if (gid >= NUM_VERTICES) return;
+
+    const vec4 iprops = posit.array[gid];
+    const vec2 ipos = iprops.xy;
+    const uint itype = floatBitsToInt(iprops.w);
+
+    // mass in Daltons
+    const float m = mass(itype);
+
+    vec2 force = vec2(0.);
+
+    float _Delta_ = -valence(itype);
+    vec2 dDelta_ = vec2(0.);
+
+    for (uint j; j < NUM_VERTICES; j++) {
+        if (j == gid) continue;
+
+        const vec4 jprops = posit.array[j];
+        const vec2 jpos = jprops.xy;
+        const uint jtype = floatBitsToInt(jprops.w);
+
+        // set minimum r for numerical stability in edge cases that shouldn't
+        // typically occur
+        const float r = max(.2, distance(ipos, jpos));
+
+        const float p_bo1 = p_bo1_lut(itype, jtype);
+        const float p_bo2 = p_bo2_lut(itype, jtype);
+        const float p_bo3 = p_bo3_lut(itype, jtype);
+        const float p_bo4 = p_bo4_lut(itype, jtype);
+        const float p_bo5 = p_bo5_lut(itype, jtype);
+        const float p_bo6 = p_bo6_lut(itype, jtype);
+
+        const float r_sigma = (r_sigma_lut(itype) + r_sigma_lut(jtype)) / 2.;
+        const float r_pi = (r_pi_lut(itype) + r_pi_lut(jtype)) / 2.;
+        // XXX JB should this use r_pi_lut twice?
+        const float r_pi_pi = (r_pi_lut(itype) + r_pi_lut(jtype)) / 2.;
+
+        const float bo_sigma = fbo_(r, p_bo1, p_bo2, r_sigma);
+        const float bo_pi = itype >= min_pi_type && jtype >= min_pi_type ? fbo_(r, p_bo3, p_bo4, r_pi) : 0;
+        // XXX JB should this be min_pi_pi_type twice?
+        const float bo_pi_pi = itype >= min_pi_pi_type && jtype >= min_pi_type ? fbo_(r, p_bo5, p_bo6, r_pi_pi) : 0;
+        const float bo_ = bo_sigma + bo_pi + bo_pi_pi;
+
+        // TODO simplify?
+        const vec2 dr = vec2(ipos.x - jpos.x, ipos.y - jpos.y) / r;
+
+        const float dbo_sigma = fdbo_(r, p_bo1, p_bo2, r_sigma);
+        const float dbo_pi = itype >= min_pi_type && jtype >= min_pi_type ? fdbo_(r, p_bo3, p_bo4, r_pi) : 0;
+        // XXX JB should this be min_pi_pi_type twice?
+        const float dbo_pi_pi = itype >= min_pi_type && jtype >= min_pi_type ? fdbo_(r, p_bo5, p_bo6, r_pi_pi) : 0;
+        const vec2 dbo_ = ((dbo_sigma + dbo_pi + dbo_pi_pi) / r) * dr;
+
+        _Delta_ += bo_;
+        dDelta_ += dbo_;
+    }
+
+    for (uint j; j < NUM_VERTICES; j++) {
+        if (j == gid) continue;
+
+        const vec4 jprops = posit.array[j];
+        const vec2 jpos = jprops.xy;
+        const uint jtype = floatBitsToInt(jprops.w);
+
+        // set minimum r for numerical stability in edge cases that shouldn't
+        // typically occur
+        const float r = max(.2, distance(ipos, jpos));
+
+        const float p_bo1 = p_bo1_lut(itype, jtype);
+        const float p_bo2 = p_bo2_lut(itype, jtype);
+        const float p_bo3 = p_bo3_lut(itype, jtype);
+        const float p_bo4 = p_bo4_lut(itype, jtype);
+        const float p_bo5 = p_bo5_lut(itype, jtype);
+        const float p_bo6 = p_bo6_lut(itype, jtype);
+
+        const float r_sigma = (r_sigma_lut(itype) + r_sigma_lut(jtype)) / 2.;
+        const float r_pi = (r_pi_lut(itype) + r_pi_lut(jtype)) / 2.;
+        // XXX JB should this use r_pi_lut twice?
+        const float r_pi_pi = (r_pi_lut(itype) + r_pi_lut(jtype)) / 2.;
+
+        const float bo_sigma = fbo_(r, p_bo1, p_bo2, r_sigma);
+        const float bo_pi = itype >= min_pi_type && jtype >= min_pi_type ? fbo_(r, p_bo3, p_bo4, r_pi) : 0;
+        // XXX JB should this be min_pi_pi_type twice?
+        const float bo_pi_pi = itype >= min_pi_pi_type && jtype >= min_pi_type ? fbo_(r, p_bo5, p_bo6, r_pi_pi) : 0;
+        const float bo_ = bo_sigma + bo_pi + bo_pi_pi;
+
+        // TODO simplify?
+        const vec2 dr = vec2(ipos.x - jpos.x, ipos.y - jpos.y) / r;
+
+        const float dbo_sigma = fdbo_(r, p_bo1, p_bo2, r_sigma);
+        const float dbo_pi = itype >= min_pi_type && jtype >= min_pi_type ? fdbo_(r, p_bo3, p_bo4, r_pi) : 0;
+        // XXX JB should this be min_pi_pi_type twice?
+        const float dbo_pi_pi = itype >= min_pi_type && jtype >= min_pi_type ? fdbo_(r, p_bo5, p_bo6, r_pi_pi) : 0;
+        const vec2 dbo_ = ((dbo_sigma + dbo_pi + dbo_pi_pi) / r) * dr;
+
+        // converting kcal/mole into eV
+        const float de = de_lut(itype, jtype) * .0434;
+
+        // potential valley gets closer to nucleus as bond order increases
+        // unchanged at BO = 0, reduced by ~50% at BO = 1, and reduced by ~60% at BO = 3
+        const float sigma0 = (lj_sigma(itype) + lj_sigma(jtype)) / 2.;
+        const float sigma = sigma0 * (.6 * pow(.17, bo_) + .4);
+        const float eps0 = sqrt(lj_eps(itype) * lj_eps(jtype));
+        const float eps = eps0 + de * bo_;
+
+        const vec2 dsigma = sigma0 * .6 * (-.177196) * pow(.17, bo_) * dbo_;
+        const vec2 deps = de * dbo_;
+
+        // XXX JB not sure the sign is right, but it seems to work
+        const vec2 force_ = normalize(jpos - ipos) *
+            -((4 * pow(sigma, 5) / pow(r, 13)) *
+              (r * sigma * (pow(r, 6) - pow(sigma, 6)) * deps + 6 * eps * (pow(r, 6) - 2 * pow(sigma, 6)) * (r * dsigma - sigma)));
+
+        // Unit conversion:
+        // We have eV/Angstrom, we want Dalton * Angstrom * fs^-2
+        force += 0.00964853322 * force_;
+    }
+
+    accel.array[gid].xy = force / m;
+}
+
+// XXX JB oops looks like this isn't actually complete

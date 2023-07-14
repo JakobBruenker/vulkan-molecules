@@ -1,4 +1,4 @@
-module VulkanSetup.Shaders where
+module VulkanConfig.Shaders where
 
 import RIO.FilePath ((</>), FilePath)
 import Data.Vector.Sized qualified as Sized
@@ -7,10 +7,10 @@ import VulkanSetup.Types
 
 shadersPath, vertexShaderPath, fragmentShaderPath, updatePosPath, updateAccPath :: FilePath
 shadersPath = "shaders"
-vertexShaderPath   = shadersPath </> "vert.spv"
-fragmentShaderPath = shadersPath </> "frag.spv"
-updatePosPath      = shadersPath </> "updPos.spv"
-updateAccPath      = shadersPath </> "updAcc.spv"
+vertexShaderPath   = shadersPath </> "shader.vertex"
+fragmentShaderPath = shadersPath </> "shader.fragment"
+updatePosPath      = shadersPath </> "updPos.compute"
+updateAccPath      = shadersPath </> "updAcc.compute"
 
 type instance ComputeShaderCount = 2
 

@@ -15,6 +15,8 @@ import Foreign (castPtr, with, copyBytes)
 import Control.Concurrent (forkIO)
 import Control.Monad (replicateM)
 
+import GHC.Exception (prettyCallStack)
+
 import qualified Graphics.UI.GLFW as GLFW
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -29,13 +31,14 @@ import Vulkan.CStruct.Extends
 import Vulkan.Zero
 
 import VulkanConfig.Pipeline as PL
+import VulkanConfig.Shaders
 import VulkanSetup.Initialize
 import VulkanSetup.GraphicsMutables
-import VulkanSetup.Shaders
 import VulkanSetup.Types
 import Options
 import Utils
 import Types
+import VulkanSetup.Error
 
 -- TODO use low latency garbage collector
 main :: IO ()
@@ -46,8 +49,8 @@ main = do
   withLogFunc logOptions \logFunc -> do
     let ?logFunc = logFunc
     Dict <- pure $ mkConfig opts
-    catch runApp \e -> do
-      logError $ display @SomeException e
+    catch runApp \(e :: AppExceptionWithCallStack) -> do
+      logError $ display e.appException <> "\n" <> fromString (prettyCallStack $ e.callStack)
       exitFailure
 
 runApp :: (HasLogger, HasConfig) => IO ()
@@ -155,7 +158,7 @@ drawFrame currentFrame = do
     acquireNextImageKHR ?device mutables.swapchain maxBound (ixSync ?imageAvailable) NULL_HANDLE
 
   imageRelated <- fromMaybeM
-    do throwIO VkCommandBufferIndexOutOfRange
+    do throw VkCommandBufferIndexOutOfRange
     do pure $ mutables.imageRelateds ^? ix (fromIntegral imageIndex)
 
   imageInFlightFence <- readIORef imageRelated.imageInFlight
@@ -204,7 +207,7 @@ copyGraphicsUniformBuffer imageIndex = do
   MkUboData{ref} <- pure ?graphicsUboData
   time <- readIORef ref
   memory <- maybe
-    do throwIO VkUniformBufferIndexOutOfRange
+    do throw VkUniformBufferIndexOutOfRange
     do pure . snd
     do ?graphicsUniformBuffers ^? ix (fromIntegral imageIndex)
   withMappedMemory ?device memory 0 ?graphicsUniformBufferSize zero bracket \target ->

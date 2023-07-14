@@ -27,12 +27,13 @@ executable boxticle
     -- Modules included in this executable, other than Main.
     other-modules:    VulkanSetup.GraphicsMutables
                       VulkanSetup.ComputeMutables
+                      VulkanSetup.Error
                       VulkanSetup.Initialize
-                      VulkanSetup.Shaders
                       VulkanSetup.Types
                       VulkanSetup.Types.Unsafe
                       VulkanSetup.Utils
                       VulkanConfig.Pipeline
+                      VulkanConfig.Shaders
                       Utils
                       Options
                       Types
@@ -43,6 +44,7 @@ executable boxticle
                       , template-haskell
                       , transformers
                       , vulkan ^>=3.14.2
+                      , vulkan-utils ^>=0.5.10.2
                       , optparse-applicative ^>=0.16.1
                       , GLFW-b ^>=3.3.0.0
                       , rio ^>=0.1.20

@@ -28,6 +28,7 @@ import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 import Utils
 import VulkanSetup.Types
 import VulkanSetup.Utils
+import VulkanSetup.Error
 
 initGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
                          HasGraphicsUniformBuffers)
@@ -206,7 +207,7 @@ constructGraphicsPipeline renderPass extent layout = do
 
   graphicsPipeline <- case pipelines of
     [pipeline] -> pure (releasePipelines, pipeline)
-    (length -> num) -> throwIO $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
+    (length -> num) -> throw $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
 
   logDebug "Created graphics pipeline."
   pure graphicsPipeline
@@ -320,7 +321,7 @@ constructImageWithView Extent2D{width, height} samples format usage aspectMask =
         -- check whether all properties are set
         ((propertyFlags `xor` properties) .&. properties == zero)
 
-  memoryTypeIndex <- maybe (throwIO VkNoSuitableMemoryType) (pure . fromIntegral . fst) memoryType
+  memoryTypeIndex <- maybe (throw VkNoSuitableMemoryType) (pure . fromIntegral . fst) memoryType
   let allocInfo = zero{allocationSize = memReqs.size , memoryTypeIndex}
 
   (memKey, memory) <- withMemory ?device allocInfo Nothing allocate
@@ -381,7 +382,7 @@ constructDescriptorSets count = do
 
   ifor_ descriptorSets \i dstSet -> do
     buffer <- maybe
-      do throwIO VkUniformBufferIndexOutOfRange
+      do throw VkUniformBufferIndexOutOfRange
       do pure . fst
       do ?graphicsUniformBuffers ^? ix i
     let bufferInfo = [ zero{ buffer

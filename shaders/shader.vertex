@@ -1,6 +1,6 @@
 #version 460
 // #extension GL_EXT_debug_printf : enable
-// TODO: Use vulkan-utils glsl together with quoteFile to compile shaders
+// XXX JB: Use vulkan-utils glsl together with quoteFile to compile shaders
 
 layout(location = 0) in vec3 position;
 layout(location = 1) in uint atomType;

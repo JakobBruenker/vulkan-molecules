@@ -44,12 +44,13 @@ import VulkanSetup.GraphicsMutables
 import VulkanSetup.Utils
 import VulkanSetup.Types
 import VulkanSetup.ComputeMutables
+import VulkanSetup.Error
 
 initGLFW :: HasLogger => ResIO (Dict HasGLFW)
 initGLFW = do
   (_, glfwToken) <- allocate
     do liftIO $ ifM GLFW.init do pure UnsafeMkGLFWToken
-                              do throwIO GLFWInitError
+                              do throw GLFWInitError
     do const $ liftIO GLFW.terminate
   let ?glfw = glfwToken
 
@@ -58,7 +59,7 @@ initGLFW = do
 
 initInstance :: (HasLogger, HasValidationLayers) => ResIO (Dict HasInstance)
 initInstance = do
-  unlessM (liftIO GLFW.vulkanSupported) $ throwIO GLFWVulkanNotSupported
+  unlessM (liftIO GLFW.vulkanSupported) $ throw GLFWVulkanNotSupported
   logDebug "Verified GLFW Vulkan support."
 
   enabledExtensionNames <- V.fromList <$>
@@ -109,7 +110,7 @@ initWindow = do
                                      , GLFW.WindowHint'Floating actuallyFullscreen
                                      ]
        progName <- getProgName
-       maybeM do throwIO GLFWWindowError
+       maybeM do throw GLFWWindowError
               do \window -> do GLFW.setWindowPos window xPos yPos
                                GLFW.setFramebufferSizeCallback window $ Just \_ _ _ ->
                                  writeIORef framebufferResized True
@@ -145,7 +146,7 @@ initValidationLayers = do
     (_, properties) <- enumerateInstanceLayerProperties
     case NE.nonEmpty $ filter (not . (properties `hasLayer`)) layers of
       Nothing          -> pure layers
-      Just unsupported -> throwIO $ VkValidationLayersNotSupported unsupported
+      Just unsupported -> throw $ VkValidationLayersNotSupported unsupported
   let ?validationLayers = validationLayers
   pure Dict
   where
@@ -157,7 +158,7 @@ initPhysicalDevice :: (HasLogger, HasInstance, HasSurface)
 initPhysicalDevice = do
   dict <- enumeratePhysicalDevices ?instance >>= do
     snd >>> toList >>> NE.nonEmpty >>> maybe
-      do throwIO VkNoPhysicalDevices
+      do throw VkNoPhysicalDevices
       \(toList -> physDevs) -> do
         let lds = length physDevs
         logDebug . (("Found " <> display lds <> plural " physical device" lds <> ": ") <>) .
@@ -165,7 +166,7 @@ initPhysicalDevice = do
           =<< traverse (fmap deviceName <$> getPhysicalDeviceProperties) physDevs
 
         fmap ((\(Arg _ x) -> x) . getMax . sconcat) .
-          fromMaybeM (throwIO VkNoSuitableDevices) . fmap NE.nonEmpty $
+          fromMaybeM (throw VkNoSuitableDevices) . fmap NE.nonEmpty $
             mapMaybeM ?? physDevs $ \physDev -> runMaybeT do
               let ?physicalDevice = physDev
               guard =<< checkDeviceExtensionSupport
@@ -322,7 +323,7 @@ constructBuffer info properties = do
         -- check whether all properties are set
         ((propertyFlags `xor` properties) .&. properties == zero)
 
-  memoryTypeIndex <- maybe (throwIO VkNoSuitableMemoryType) (pure . fromIntegral . fst) memoryType
+  memoryTypeIndex <- maybe (throw VkNoSuitableMemoryType) (pure . fromIntegral . fst) memoryType
 
   let allocInfo = zero{allocationSize = memReqs.size, memoryTypeIndex}
   (memoryKey, memory) <- withMemory ?device allocInfo Nothing allocate
@@ -347,7 +348,7 @@ copyBuffer commandPool queue src dst size = do
       queueSubmit queue [submitInfo] NULL_HANDLE
       queueWaitIdle queue
       pure ()
-    bufs -> throwIO $ VkWrongNumberOfCommandBuffers 1 (fromIntegral $ length bufs)
+    bufs -> throw $ VkWrongNumberOfCommandBuffers 1 (fromIntegral $ length bufs)
 
 initVertexBuffer :: (HasLogger, HasPhysicalDevice, HasDevice, HasGraphicsQueue, HasGraphicsCommandPool,
                      HasVertexBufferInfo, HasVertexData)

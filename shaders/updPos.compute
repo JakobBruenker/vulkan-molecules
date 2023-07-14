@@ -2,7 +2,8 @@
 // TODO pass this in from outside?
 // worst case, could pass it in as uniform -- probably want to do that anyway
 // because why in the world would you hardcode the number of partitcles
-#define NUM_VERTICES 256
+// see also corresponding variable in updAcc.compute
+#define NUM_VERTICES (256)
 
 layout(local_size_x = 64) in;
 layout(local_size_y = 1) in;
