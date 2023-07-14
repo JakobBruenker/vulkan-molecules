@@ -155,7 +155,7 @@ void main() {
     float _Delta_ = -valence(itype);
     vec2 dDelta_ = vec2(0.);
 
-    for (uint j; j < NUM_VERTICES; j++) {
+    for (uint j = 0; j < NUM_VERTICES; j++) {
         if (j == gid) continue;
 
         const vec4 jprops = posit.array[j];
@@ -197,7 +197,7 @@ void main() {
         dDelta_ += dbo_;
     }
 
-    for (uint j; j < NUM_VERTICES; j++) {
+    for (uint j = 0; j < NUM_VERTICES; j++) {
         if (j == gid) continue;
 
         const vec4 jprops = posit.array[j];
