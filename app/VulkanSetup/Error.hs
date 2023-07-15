@@ -9,8 +9,9 @@ import RIO.Text qualified as T
 import RIO.List qualified as L
 import RIO.ByteString qualified as B
 
-import GHC.Stack (callStack)
+import GHC.Stack (callStack, prettyCallStack)
 import Vulkan ((:::))
+import Vulkan.Exception (VulkanException, vulkanExceptionResult)
 
 data AppException
   = GLFWInitError
@@ -26,6 +27,8 @@ data AppException
   | VkCommandBufferIndexOutOfRange
   | VkUniformBufferIndexOutOfRange
   | VkNoSuitableMemoryType
+  | VkCouldn'tCreateSurface ("error" ::: VulkanException)
+  | VkUnexpectedExceptionWhileDrawingFrame ("error" ::: VulkanException)
 
 instance Show AppException where
   show = T.unpack . textDisplay
@@ -69,14 +72,22 @@ instance Display AppException where
     VkUniformBufferIndexOutOfRange -> "Program requested a uniform buffer with" <>
       " a higher index than was allocated."
 
-    VkNoSuitableMemoryType -> "Coludn't find a suitable memory type for Vulkan buffer creation."
+    VkNoSuitableMemoryType -> "Couldn't find a suitable memory type for Vulkan buffer creation."
+
+    VkCouldn'tCreateSurface e -> "Couldn't create surface: " <> displayShow (vulkanExceptionResult e)
+
+    VkUnexpectedExceptionWhileDrawingFrame e -> "Unexpected exception while drawing frame: " <> displayShow (vulkanExceptionResult e)
 
 data AppExceptionWithCallStack = AppExceptionWithCallStack
   { appException :: AppException
   , callStack :: CallStack
   } deriving Show
 
-instance Exception AppExceptionWithCallStack
+instance Exception AppExceptionWithCallStack where
+  displayException = T.unpack . textDisplay
+
+instance Display AppExceptionWithCallStack where
+  display e = display e.appException <> "\n" <> fromString (prettyCallStack e.callStack)
 
 throw :: HasCallStack => MonadIO m => AppException -> m a
 throw e = throwIO $ AppExceptionWithCallStack e callStack
