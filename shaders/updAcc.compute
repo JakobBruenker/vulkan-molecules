@@ -1,4 +1,5 @@
 #version 460
+// #extension GL_EXT_debug_printf : enable
 
 // an atom needs to have enough electrons to be able to form π and double-π bonds
 #define min_π_type (3)
