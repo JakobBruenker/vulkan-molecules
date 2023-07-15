@@ -15,8 +15,6 @@ import Foreign (castPtr, with, copyBytes)
 import Control.Concurrent (forkIO)
 import Control.Monad (replicateM)
 
-import GHC.Exception (prettyCallStack)
-
 import qualified Graphics.UI.GLFW as GLFW
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -49,8 +47,8 @@ main = do
   withLogFunc logOptions \logFunc -> do
     let ?logFunc = logFunc
     Dict <- pure $ mkConfig opts
-    catch runApp \(e :: AppExceptionWithCallStack) -> do
-      logError $ display e.appException <> "\n" <> fromString (prettyCallStack $ e.callStack)
+    catch runApp \(e :: SomeException) -> do
+      logError $ display e
       exitFailure
 
 runApp :: (HasLogger, HasConfig) => IO ()
@@ -107,7 +105,7 @@ mainLoop = do
       -- is thrown either by 'acquireNextImageKHR' or by 'queuePresentKHR'
       shouldRecreate <- drawFrame currentFrame `catch` \case
         VulkanException ERROR_OUT_OF_DATE_KHR -> pure PleaseRecreate
-        ex -> throwIO ex
+        ex -> throw $ VkUnexpectedExceptionWhileDrawingFrame ex
       resized <- readIORef ?framebufferResized
       when (resized || shouldRecreate == PleaseRecreate) $ recreateSwapchain setupGraphicsCommands
       -- TODO This is not a reliable way to get a consistent framerate

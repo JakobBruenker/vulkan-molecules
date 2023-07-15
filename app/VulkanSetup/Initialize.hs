@@ -138,7 +138,7 @@ initSurface = do
   where
     catchVk = \case
       (SUCCESS, x) -> pure x
-      (err    , _) -> throwIO $ VulkanException err
+      (err    , _) -> throw . VkCouldn'tCreateSurface $ VulkanException err
 
 initValidationLayers :: HasEnableValidationLayers => ResIO (Dict HasValidationLayers)
 initValidationLayers = do

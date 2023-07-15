@@ -124,6 +124,7 @@ constructComputePipelines :: (HasLogger, HasDevice, HasComputeShaderPaths, Known
 constructComputePipelines layout = do
   (releasePipelines, (_, pipelineList)) <-
     withShaders (toList ?computeShaderPaths) \modules -> do
+      logDebug "Compiled shaders."
 
       let pipelineInfos = V.fromList $ modules <&> \module' ->
             SomeStruct zero{ stage = SomeStruct zero{ stage = SHADER_STAGE_COMPUTE_BIT
