@@ -47,7 +47,7 @@ executable boxticle
                       , optparse-applicative ^>=0.16.1
                       , GLFW-b ^>=3.3.0.0
                       , rio ^>=0.1.20
-                      , lens ^>=5.1
+                      , lens ^>=5.1 || ^>=5.2
                       , extra ^>=1.7.9
                       , vector-sized ^>= 1.4.0
                       , finite-typelits ^>= 0.1.4.2
