@@ -19,6 +19,8 @@ import Vulkan.Zero
 import Vulkan.Utils.ShaderQQ.GLSL.Shaderc (compileShader)
 import Utils (logWarn)
 import VulkanSetup.Error
+import Data.Char
+import Text.Printf (printf)
 
 traverseToSnd :: Functor f => (a -> f b) -> a -> f (a, b)
 traverseToSnd = liftA2 fmap (,)
@@ -41,13 +43,18 @@ nonEmptyInits (x:|xs) = (x :|) <$> NE.scanl snoc [] xs
 
 withShader :: (MonadUnliftIO m, HasLogger, HasDevice) => FilePath -> (ShaderModule -> m r) -> m r
 withShader path action = do
-  code <- readFileUtf8 path
+  code <- T.concatMap escapeUnicode <$> readFileUtf8 path
   (warnings, result) <- compileShader Nothing Nothing (drop 1 $ takeExtension path) (T.unpack code)
   traverse_ (logWarn . displayShow) warnings
   bytes <- case result of
     Left errs -> throw $ GLSLCompilationErrors path errs
     Right bytes -> pure bytes
   withShaderModule ?device zero{code = bytes} Nothing bracket action
+
+escapeUnicode :: Char -> Text
+escapeUnicode c | codepoint <- ord c
+                , codepoint > 127 = T.pack $ printf "U_%x_U" codepoint
+                | otherwise = T.singleton c
 
 withShaders :: (MonadUnliftIO m, HasLogger, HasDevice) => [FilePath] -> ([ShaderModule] -> m r) -> m r
 withShaders = go []

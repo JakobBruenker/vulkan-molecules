@@ -9,6 +9,8 @@ import RIO.Text qualified as T
 import RIO.List qualified as L
 import RIO.ByteString qualified as B
 
+import Data.Char
+import Numeric
 import GHC.Stack (callStack, prettyCallStack)
 import Vulkan ((:::))
 import Vulkan.Exception (VulkanException, vulkanExceptionResult)
@@ -42,7 +44,12 @@ instance Display AppException where
     GLFWVulkanNotSupported -> "GLFW failed to find Vulkan loader or ICD."
 
     GLSLCompilationErrors shader err -> "Failed to compile shader " <>
-      fromString shader <> ":\n" <> mconcat (L.intersperse "\n\n" $ map fromString err)
+      fromString shader <> ":\n" <> mconcat (L.intersperse "\n\n" $ map (fromString . unescapeUnicode) err)
+      where
+        unescapeUnicode = \case
+          [] -> []
+          ('U':'_':(readHex -> [(codepoint, '_':'U':rest)])) -> chr codepoint : unescapeUnicode rest
+          (c:t) -> c : unescapeUnicode t
 
     VkValidationLayersNotSupported ls ->
       "Requested validation layer" <> num <> " not supported: " <>

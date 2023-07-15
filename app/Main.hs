@@ -14,6 +14,7 @@ import Control.Lens (ix, (??), both)
 import Foreign (castPtr, with, copyBytes)
 import Control.Concurrent (forkIO)
 import Control.Monad (replicateM)
+import System.IO
 
 import qualified Graphics.UI.GLFW as GLFW
 
@@ -41,6 +42,10 @@ import VulkanSetup.Error
 -- TODO use low latency garbage collector
 main :: IO ()
 main = do
+  -- On windows, user needs to set `chcp.com 65001`
+  let encoding = utf8
+  hSetEncoding stdout encoding
+  hSetEncoding stderr encoding
   opts <- execParser (info (options <**> helper) fullDesc)
   -- TODO make color configurable, or maybe check docs on hIsTerminalDevice
   logOptions <- setLogUseColor True <$> logOptionsHandle stderr (optVerbose opts)
