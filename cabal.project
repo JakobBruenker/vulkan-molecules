@@ -4,16 +4,17 @@ allow-newer:
     *:haskus-utils-data
   , *:haskus-utils-variant
   , *:lens
+  , *:ghc
 
 source-repository-package
   type: git
   location: https://gitlab.com/sheaf/fir.git
-  tag: 06c5dad40ef382c74805cfbb5320a12a62a2712c
+  tag: ee2b1fbbeccdd3b3a936fcfc2b8ae4a3c64b0c53
 
 source-repository-package
   type: git
   location: https://github.com/haskus/packages
-  tag: 1ff5059e66d48144b76523bff1ace81dcd6df634
+  tag: 7af3ce7a3742c7ed56e1ea4158a23d80cf58123c
   subdir: haskus-utils-data
   subdir: haskus-utils-variant
 

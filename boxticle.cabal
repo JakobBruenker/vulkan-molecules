@@ -51,7 +51,7 @@ executable boxticle
                       , extra ^>=1.7.9
                       , vector-sized ^>= 1.4.0
                       , finite-typelits ^>= 0.1.4.2
-                      , fir ^>= 0.0.1.0
+                      , fir ^>= 0.1.0.0
                       , resourcet ^>= 1.2.4.3
                       , storable-tuple ^>= 0.0.3
                       , monad-loops ^>= 0.4.3
