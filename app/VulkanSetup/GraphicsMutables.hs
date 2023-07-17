@@ -147,11 +147,11 @@ constructGraphicsPipeline renderPass extent layout = do
       viewportState = Just $ SomeStruct zero{ viewports = [viewport]
                                             , scissors = [scissor]
                                             }
-      rasterizationState = SomeStruct zero{ polygonMode = POLYGON_MODE_FILL
-                                          , lineWidth = 1
-                                          , cullMode = CULL_MODE_BACK_BIT
-                                          , frontFace = FRONT_FACE_CLOCKWISE
-                                          }
+      rasterizationState = Just $ SomeStruct zero{ polygonMode = POLYGON_MODE_FILL
+                                                 , lineWidth = 1
+                                                 , cullMode = CULL_MODE_BACK_BIT
+                                                 , frontFace = FRONT_FACE_CLOCKWISE
+                                                 }
       multisampleState = Just $ SomeStruct zero{ rasterizationSamples = ?msaaSamples
                                                , minSampleShading = 1
                                                }

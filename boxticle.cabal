@@ -44,7 +44,7 @@ executable boxticle
     build-depends:      base >=4.16 && < 5
                       , template-haskell
                       , transformers
-                      , vulkan ^>=3.14.2
+                      , vulkan ^>=3.24.5
                       , optparse-applicative ^>=0.16.1
                       , GLFW-b ^>=3.3.0.0
                       , rio ^>=0.1.20
