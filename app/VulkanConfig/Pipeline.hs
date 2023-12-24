@@ -86,6 +86,8 @@ setupComputeCommands = do
     -- TODO: consider having VERTEX_SHADER_BIT as dstStageMask specifically for
     -- updPos (or possibly for all shaders for convenience) if it doesn't
     -- negatively impact performance
+    -- Update: I think that should be a subpass dependency actually, if desired
+    -- TODO we probably can remove the MemoryBarrier and just make this an execution barrier
     let memoryBarrier = zero{ srcAccessMask = ACCESS_SHADER_WRITE_BIT
                             , dstAccessMask = ACCESS_SHADER_READ_BIT
                             } :: MemoryBarrier

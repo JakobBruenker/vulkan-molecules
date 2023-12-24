@@ -116,6 +116,7 @@ mainLoop = do
   deviceWaitIdle ?device
 
 -- TODO benchmark to see if changing this makes any difference
+-- NB: can't go below 1
 enqueuesPerStep :: Natural
 enqueuesPerStep = 10
 

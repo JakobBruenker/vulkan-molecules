@@ -284,6 +284,7 @@ deviceExtensions :: Vector ByteString
 deviceExtensions =
   [ KHR_SWAPCHAIN_EXTENSION_NAME
   , KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME
+  , KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME -- TODO remove, is used for printf
   ]
 
 initCommandPools :: (HasLogger, HasDevice, HasGraphicsQueueFamily, HasComputeQueueFamily)

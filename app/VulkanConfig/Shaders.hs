@@ -13,6 +13,7 @@ import Data.Vector.Sized qualified as Sized
 
 import FIR
 import FIR.Syntax.Labels
+import FIR.Syntax.DebugPrintf
 import Math.Linear
 
 import Data.Foldable (sequence_)
@@ -71,6 +72,9 @@ updatePos = Module $ entryPoint @"main" @Compute do
 
     pos  <- use @(Name "posit"  :.: Ar :.: Ix :.: Swizzle "xy") gid
     acc  <- use @(Name "accel"  :.: Ar :.: Ix :.: Swizzle "xy") gid
+    when (isNaN acc.x) $ debugPrintf ("acc.x is nan " % vec float) pos
+    when (isNaN acc.y) $ debugPrintf ("acc.y is nan " % vec float) pos
+    florp <- use @(Name "posit" :.: Ar :.: Ix :.: Swizzle "z") gid -- XXX JB remove
     acc' <- use @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid
     vel  <- use @(Name "veloc"  :.: Ar :.: Ix :.: Swizzle "xy") gid
     vel' <- let' $ vel ^+^ (dt * 0.5) *^ (acc ^+^ acc')
@@ -87,15 +91,26 @@ updatePos = Module $ entryPoint @"main" @Compute do
                     then f vel'.y True
                     else if pos.y > b then -(f vel'.y False) else vel'.y
     assign @(Name "veloc" :.: Ar :.: Ix :.: Swizzle "xy") gid (Vec2 velx' vely')
+    dp <- let' $ (^+^ (dt *^ vel' ^+^ (dt * dt * 0.5) *^ acc')) $ Vec2 0 0
+    debugPrintf (vec float % " ||| " % vec float % " - prediction: it's all gonna be the same 🙃" % float % " oh and " % float % " dpos: " % vec float) pos acc florp (florp + 1000) dp
+    -- XXX JB this is super weird. The value is clearly updated at the end of this very shader, but this shows the same counter over multiple invocations
+    -- XXX JB NB: this debug printf shows the same dpos over all dispatches within a single frame. However, the x position in the updAcc shader *does* change
+    -- within a single frame!
+    -- So the question remains, why does the NaN not propagate immediately then?
 
     -- -- lazy friction
-    -- vel'' <- let' $ Vec2 velx' vely' ^* 0.99998
+    -- vel'' <- let' $ Vec2 velx' vely' ^* 0.999998
     -- assign @(Name "veloc" :.: Ar :.: Ix :.: Swizzle "xy") gid vel''
 
     modifying @(Name "posit" :.: Ar :.: Ix :.: Swizzle "xy") gid
       (^+^ (dt *^ vel' ^+^ (dt * dt * 0.5) *^ acc'))
+    modifying @(Name "posit" :.: Ar :.: Ix :.: Swizzle "z") gid (+ 1)
+    -- assign @(Name "posit" :.: Ar :.: Ix :.: Swizzle "z") gid $ bitcast (bitcast florp + (1 :: Code Int32))
+    -- XXX JB whether you have modifying or assign here doesn't seem to make a difference
+    -- assign @(Name "posit" :.: Ar :.: Ix :.: Swizzle "z") gid acc'.x
 
     assign @(Name "accel" :.: Ar :.: Ix :.: Swizzle "xy") gid acc'
+    -- XXX JB why does removing this not change the behavior?
     assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (Vec2 0 0)
 
 type UpdateAccLocalSize = 64
@@ -160,6 +175,7 @@ atomColor :: Code AtomType -> Code (V 3 Float)
 atomColor atomType =
   if atomType == 1 then Vec3 0.9 0.9 0.9 else if atomType == 6 then Vec3 0.3 0.3 0.3 else Vec3 1 0 1
 
+-- XXX JB I'm still confused by what I saw earlier. Check why when you do get nan, it doesn't propagate instantly but only after the next frame???
 updateAcc :: Module '[Ubo, Posit, Accel', Main (LocalSize UpdateAccLocalSize 1 1)]
 updateAcc = Module $ entryPoint @"main" @Compute do
   -- ubo <- #ubo
@@ -236,6 +252,8 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
         -- set minimum r of for numerical stability in edge cases that
         -- shouldn't occur
+        -- XXX JB it actually does occur! very often, i.e. right in the first collision, where the dist goes down to less than 7.5e-3 i.e. 0.0075
+        -- Weirdly making this value smaller doesn't seem to change the behavior very much
         r <- let' $ max 0.2 (distance ipos jpos)
 
         p_bo1 <- let' $ p_bo1_lut itype jtype
@@ -251,19 +269,31 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
         let bo'σ = fbo' r p_bo1 p_bo2 rσ
             bo'π = if itype >= Lit minπType && jtype >= Lit minπType then fbo' r p_bo3 p_bo4 rπ else 0
+            -- XXX JB a lot of these say π instead of ππ
             bo'ππ = if itype >= Lit minππType && jtype >= Lit minπType then fbo' r p_bo5 p_bo6 rππ else 0
         bo' <- let' $ bo'σ + bo'π + bo'ππ
 
         dr <- let' $ Vec2 (ipos.x - jpos.x) (ipos.y - jpos.y) ^/ r
+        when (isNaN dr.x) $ debugPrintf ("dr.x is nan " % vec float % "; j: " % vec float) ipos jpos
+        when (isNaN dr.y) $ debugPrintf ("dr.y is nan " % vec float % "; j: " % vec float) ipos jpos
 
+        -- XXX JB have to insert these parentheses to prevent infinity/NaN. Is there a more robust solution?
+        -- let fdbo' pa pb ro = pa * pb * ((r / ro)**pb * fbo' r pa pb ro)
         let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' r pa pb ro
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
             dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
             dbo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo5 p_bo6 rππ else 0
         dbo' <- let' $ ((dbo'σ + dbo'π + dbo'ππ) / r) *^ dr
+        when (isNaN dbo'σ) $ debugPrintf ("dbo'σ is nan " % vec float % "; j: " % vec float) ipos jpos
+        when (isNaN dbo'π) $ debugPrintf ("dbo'π is nan " % vec float % "; j: " % vec float) ipos jpos
+        when (isNaN dbo'ππ) $ debugPrintf ("dbo'ππ is nan " % vec float % "; j: " % vec float % " also types: " % word32 % ", " % word32 %
+          "\np_bo5: " % float % ", p_bo6: " % float % ", rππ: " % float % ", r: " % float) ipos jpos itype jtype p_bo5 p_bo6 rππ r
 
         #_Δ' %= (+ bo')
         #dΔ' %= (^+^ dbo')
+        when (isNaN bo') $ debugPrintf ("bo' is nan " % vec float % "; j: " % vec float) ipos jpos
+        when (isNaN dbo'.x) $ debugPrintf ("dbo'.x is nan " % vec float % "; j: " % vec float) ipos jpos
+        when (isNaN dbo'.y) $ debugPrintf ("dbo'.y is nan " % vec float % "; j: " % vec float) ipos jpos
 
     #j .= 0
 
@@ -275,8 +305,6 @@ updateAcc = Module $ entryPoint @"main" @Compute do
         jpos <- let' $ view @(Swizzle "xy") jprops
         jtype <- let' $ bitcast jprops.w
 
-        -- set minimum r of for numerical stability in edge cases that
-        -- shouldn't occur
         r <- let' $ max 0.2 (distance ipos jpos)
 
         p_bo1 <- let' $ p_bo1_lut itype jtype
@@ -295,6 +323,8 @@ updateAcc = Module $ entryPoint @"main" @Compute do
             bo'ππ = if itype >= Lit minππType && jtype >= Lit minπType then fbo' r p_bo5 p_bo6 rππ else 0
         bo' <- let' $ bo'σ + bo'π + bo'ππ
 
+        -- XXX JB have to insert these parentheses to prevent infinity/NaN. Is there a more robust solution?
+        -- let fdbo' pa pb ro = pa * pb * ((r / ro)**pb * fbo' r pa pb ro)
         let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' r pa pb ro
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
             dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
@@ -349,9 +379,12 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
         -- Unit conversion:
         -- We have eV/Angstrom, we want Dalton * Angstrom * fs^-2
+        when (isNaN force.x) $ debugPrintf ("force.x is nan " % vec float) ipos
+        when (isNaN force.y) $ debugPrintf ("force.y is nan " % vec float) ipos
         #force %= (^+^ 0.00964853322 *^ force)
 
     force <- #force
+    debugPrintf ("pos: " % vec float % "; force: " % vec float % " - FIR " % float % "(acc: " % vec float % ")") ipos force iprops.z (force ^/ m)
     assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid (force ^/ m)
 
 type VertexInput =
@@ -446,4 +479,4 @@ compileAllShaders = sequence_
   , compileTo updatePosPath spirv updatePos
   , compileTo updateAccPath spirv updateAcc
   ]
-  where spirv = [SPIRV $ Version 1 3]
+  where spirv = [SPIRV $ Version 1 3, Debug]
