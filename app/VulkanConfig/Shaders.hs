@@ -13,6 +13,8 @@ import Data.Vector.Sized qualified as Sized
 
 import FIR
 import FIR.Syntax.Labels
+-- Can use this for debugging
+-- import FIR.Syntax.DebugPrintf
 import Math.Linear
 
 import Data.Foldable (sequence_)
@@ -236,6 +238,8 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
         -- set minimum r of for numerical stability in edge cases that
         -- shouldn't occur
+        -- XXX JB it actually does occur! very often, i.e. right in the first collision, where the dist goes down to less than 7.5e-3 i.e. 0.0075
+        -- Weirdly making this value smaller doesn't seem to change the behavior very much
         r <- let' $ max 0.2 (distance ipos jpos)
 
         p_bo1 <- let' $ p_bo1_lut itype jtype
@@ -251,6 +255,7 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
         let bo'σ = fbo' r p_bo1 p_bo2 rσ
             bo'π = if itype >= Lit minπType && jtype >= Lit minπType then fbo' r p_bo3 p_bo4 rπ else 0
+            -- XXX JB a lot of these say π instead of ππ
             bo'ππ = if itype >= Lit minππType && jtype >= Lit minπType then fbo' r p_bo5 p_bo6 rππ else 0
         bo' <- let' $ bo'σ + bo'π + bo'ππ
 
@@ -276,7 +281,7 @@ updateAcc = Module $ entryPoint @"main" @Compute do
         jtype <- let' $ bitcast jprops.w
 
         -- set minimum r of for numerical stability in edge cases that
-        -- shouldn't occur
+        -- shouldn't occur, but see above
         r <- let' $ max 0.2 (distance ipos jpos)
 
         p_bo1 <- let' $ p_bo1_lut itype jtype
@@ -446,4 +451,5 @@ compileAllShaders = sequence_
   , compileTo updatePosPath spirv updatePos
   , compileTo updateAccPath spirv updateAcc
   ]
-  where spirv = [SPIRV $ Version 1 3]
+  -- XXX JB Only use Debug here if a debug flag is enabled
+  where spirv = [SPIRV $ Version 1 3, Debug]
