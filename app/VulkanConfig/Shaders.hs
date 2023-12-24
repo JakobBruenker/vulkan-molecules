@@ -261,7 +261,8 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
         dr <- let' $ Vec2 (ipos.x - jpos.x) (ipos.y - jpos.y) ^/ r
 
-        let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' r pa pb ro
+        -- Have to insert these parentheses to prevent infinity/NaN. Maybe there's a more robust solution?
+        let fdbo' pa pb ro = pa * pb * ((r / ro)**pb * fbo' r pa pb ro)
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
             dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
             dbo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo5 p_bo6 rππ else 0
@@ -300,7 +301,8 @@ updateAcc = Module $ entryPoint @"main" @Compute do
             bo'ππ = if itype >= Lit minππType && jtype >= Lit minπType then fbo' r p_bo5 p_bo6 rππ else 0
         bo' <- let' $ bo'σ + bo'π + bo'ππ
 
-        let fdbo' pa pb ro = pa * pb * (r / ro)**pb * fbo' r pa pb ro
+        -- Have to insert these parentheses to prevent infinity/NaN. Maybe there's a more robust solution?
+        let fdbo' pa pb ro = pa * pb * ((r / ro)**pb * fbo' r pa pb ro)
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
             dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
             dbo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo5 p_bo6 rππ else 0
