@@ -26,6 +26,7 @@ import Vulkan.CStruct.Extends (SomeStruct (SomeStruct))
 import Utils
 import VulkanSetup.Types
 import VulkanSetup.Utils
+import VulkanSetup.Error
 
 initComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
                        HasDevice, HasComputeDescriptorSetLayouts, HasComputeUniformBuffer,
@@ -59,7 +60,7 @@ constructCommandBuffer = do
                                }
   withCommandBuffers ?device commandBuffersInfo allocate >>= \case
     (key, [buffer]) -> pure (key, buffer)
-    (_, buffers) -> throwIO $ VkWrongNumberOfCommandBuffers 1 (fromIntegral $ V.length buffers)
+    (_, buffers) -> throw $ VkWrongNumberOfCommandBuffers 1 (fromIntegral $ V.length buffers)
 
 constructDescriptorSets :: (HasDevice, HasComputeUniformBuffer, HasComputeDescriptorSetLayoutInfo,
                             HasComputeDescriptorSetLayouts, HasComputeUniformBufferSize,
@@ -136,7 +137,7 @@ constructComputePipelines layout = do
 
   computePipeline <- case Sized.fromList (toList pipelineList) of
     Just pipelines -> pure (releasePipelines, pipelines)
-    (length -> num) -> throwIO $ VkWrongNumberOfComputePipelines 1 $ fromIntegral num
+    (length -> num) -> throw $ VkWrongNumberOfComputePipelines 1 $ fromIntegral num
 
   logDebug "Created compute pipeline."
   pure computePipeline

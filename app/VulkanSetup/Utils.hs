@@ -1,6 +1,6 @@
 module VulkanSetup.Utils where
 
-import RIO
+import RIO hiding (logWarn)
 import RIO.NonEmpty qualified as NE
 import Data.List.Extra
 import Data.Tuple (swap)
