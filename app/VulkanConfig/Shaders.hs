@@ -4,6 +4,7 @@
 
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 {-# OPTIONS_GHC -Wno-unused-do-bind #-}
+{- HLINT ignore "Use camelCase" "Use guards" -}
 
 module VulkanConfig.Shaders where
 
@@ -69,7 +70,7 @@ updatePos = Module $ entryPoint @"main" @Compute do
   gid <- #gl_GlobalInvocationID <<&>> \i -> i.x
   when (gid < Lit numVertices) do
     ubo <- #ubo
-    dt <- let' $ ubo.dt
+    dt <- let' ubo.dt
 
     pos  <- use @(Name "posit"  :.: Ar :.: Ix :.: Swizzle "xy") gid
     acc  <- use @(Name "accel"  :.: Ar :.: Ix :.: Swizzle "xy") gid
@@ -78,9 +79,9 @@ updatePos = Module $ entryPoint @"main" @Compute do
     vel' <- let' $ vel ^+^ (dt * 0.5) *^ (acc ^+^ acc')
     -- friction
     let f v isMin = (if (if isMin then (<) else (>)) v 0 then 0.9 else 1) * abs v
-    r <- let' $ ubo.worldWidth
+    r <- let' ubo.worldWidth
     l <- let' 0
-    b <- let' $ ubo.worldHeight
+    b <- let' ubo.worldHeight
     t <- let' 0
     velx' <- let' $ if pos.x < l
                     then f vel'.x True
@@ -306,11 +307,11 @@ updateAcc = Module $ entryPoint @"main" @Compute do
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
             dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
             dbo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo5 p_bo6 rππ else 0
-        dbo' <- let' $ ((dbo'σ + dbo'π + dbo'ππ) / r)
+        dbo' <- let' $ (dbo'σ + dbo'π + dbo'ππ) / r
         -- dbo'v <- let' $ dbo' *^ dr
 
         -- converting kcal/mol into eV
-        de <- let' $ (de_lut itype jtype) * 0.0434
+        de <- let' $ de_lut itype jtype * 0.0434
         -- TODO figure out proper conversion factor
         -- conv <- let' 0.1
 
