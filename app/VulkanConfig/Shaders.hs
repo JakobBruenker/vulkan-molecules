@@ -448,12 +448,11 @@ shaderPaths = Dict
         ?fragmentShaderPath = fragmentShaderPath
         ?computeShaderPaths = Sized.fromTuple (updatePosPath, updateAccPath)
 
-compileAllShaders :: IO ()
+compileAllShaders :: HasDebug => IO ()
 compileAllShaders = sequence_
   [ compileTo vertexShaderPath spirv vertex
   , compileTo fragmentShaderPath spirv fragment
   , compileTo updatePosPath spirv updatePos
   , compileTo updateAccPath spirv updateAcc
   ]
-  -- XXX JB Only use Debug here if a debug flag is enabled
-  where spirv = [SPIRV $ Version 1 3, Debug]
+  where spirv = applyWhen ?enableDebug (Debug :) [SPIRV $ Version 1 3]

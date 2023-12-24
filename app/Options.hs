@@ -12,6 +12,7 @@ data Options = MkOptions { optWidth            :: Natural
                          , optMonitorIndex     :: Natural
                          , optVerbose          :: Bool
                          , optValidationLayers :: Bool
+                         , optDebug            :: Bool
                          }
 
 
@@ -22,6 +23,7 @@ mkConfig (MkOptions{..}) = Dict
         ?fullscreen             = optFullscreen
         ?monitorIndex           = optMonitorIndex
         ?enableValidationLayers = optValidationLayers
+        ?enableDebug            = optDebug
 
 options :: Parser Options
 options = MkOptions
@@ -56,3 +58,7 @@ options = MkOptions
       ( long "val-layers"
      <> short 'l'
      <> help "Enable Vulkan validation layers")
+  <*> switch
+      ( long "debug"
+      <> short 'd'
+      <> help "Enable debugging functionality for shaders")

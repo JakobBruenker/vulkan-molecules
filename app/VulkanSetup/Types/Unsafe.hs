@@ -91,9 +91,11 @@ type HasWindowSize = ( HasWindowWidth
 type HasFullscreen             = ?fullscreen             :: Bool
 type HasMonitorIndex           = ?monitorIndex           :: Natural
 type HasEnableValidationLayers = ?enableValidationLayers :: Bool
+type HasDebug                  = ?enableDebug            :: Bool
 type HasConfig = ( HasFullscreen
                  , HasMonitorIndex
                  , HasEnableValidationLayers
+                 , HasDebug
                  , HasWindowSize
                  )
 

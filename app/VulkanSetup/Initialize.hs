@@ -19,6 +19,7 @@ import Control.Monad.Trans.Resource (allocate, ResIO, MonadResource, ReleaseKey,
 import Data.Coerce (coerce)
 import Data.Foldable (find)
 import Data.List (nub)
+import Data.Function (applyWhen)
 import Foreign (malloc, nullPtr, Storable (peek, sizeOf), copyBytes, castPtr)
 import Foreign.Storable.Tuple ()
 import Control.Lens.Combinators (ifind)
@@ -153,7 +154,7 @@ initValidationLayers = do
     hasLayer props = V.elem ?? V.map layerName props
     layers = ["VK_LAYER_KHRONOS_validation"]
 
-initPhysicalDevice :: (HasLogger, HasInstance, HasSurface)
+initPhysicalDevice :: (HasLogger, HasInstance, HasSurface, HasDebug)
                    => ResIO (Dict HasPhysicalDeviceRelated)
 initPhysicalDevice = do
   dict <- enumeratePhysicalDevices ?instance >>= do
@@ -214,7 +215,7 @@ initPhysicalDevice = do
           "Found " <> name <> " queue family (index " <> display queueIndex <> ") on " <>
           dName <> "."
 
-    checkDeviceExtensionSupport :: (MonadIO m, HasPhysicalDevice) => m Bool
+    checkDeviceExtensionSupport :: (MonadIO m, HasPhysicalDevice, HasDebug) => m Bool
     checkDeviceExtensionSupport = do
       exts <- fmap extensionName . snd <$> enumerateDeviceExtensionProperties ?physicalDevice Nothing
       let yes = V.all (`elem` exts) deviceExtensions
@@ -252,7 +253,7 @@ initPhysicalDevice = do
     devName :: (MonadIO m, HasPhysicalDevice) => m Utf8Builder
     devName = displayBytesUtf8 . deviceName <$> getPhysicalDeviceProperties ?physicalDevice
 
-initDevice :: (HasLogger, HasPhysicalDeviceRelated, HasValidationLayers)
+initDevice :: (HasLogger, HasPhysicalDeviceRelated, HasValidationLayers, HasDebug)
            => ResIO (Dict HasDevice)
 initDevice = do
   let queueCreateInfos =
@@ -285,11 +286,11 @@ initQueues = do
   logDebug "Obtained device queues."
   pure Dict
 
-deviceExtensions :: Vector ByteString
+deviceExtensions :: HasDebug => Vector ByteString
 deviceExtensions =
+  applyWhen ?enableDebug (V.cons KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME)
   [ KHR_SWAPCHAIN_EXTENSION_NAME
   , KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME
-  , KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME -- XXX JB Only used if debug flag is enabled
   ]
 
 initCommandPools :: (HasLogger, HasDevice, HasGraphicsQueueFamily, HasComputeQueueFamily)
