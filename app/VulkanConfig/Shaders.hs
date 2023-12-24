@@ -4,6 +4,8 @@
 
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 {-# OPTIONS_GHC -Wno-unused-do-bind #-}
+-- Optimization takes a long time but doesn't seem to help much. Could consider making this configurable.
+{-# OPTIONS_GHC -O0 #-}
 {- HLINT ignore "Use camelCase" "Use guards" -}
 
 module VulkanConfig.Shaders where
@@ -13,7 +15,7 @@ import Data.Function
 import Data.Vector.Sized qualified as Sized
 
 import FIR
-import FIR.Syntax.Labels
+import FIR.Syntax.Labels ( (#=), (%=), (.=), IsLabel(fromLabel) )
 -- Can use this for debugging
 -- import FIR.Syntax.DebugPrintf
 import Math.Linear
@@ -67,7 +69,7 @@ type Main size = "main"   ':-> EntryPoint   '[size] Compute
 
 updatePos :: Module '[Ubo, Posit, Veloc, Accel, Accel', Main (LocalSize UpdatePosLocalSize 1 1)]
 updatePos = Module $ entryPoint @"main" @Compute do
-  gid <- #gl_GlobalInvocationID <<&>> \i -> i.x
+  gid <- #gl_GlobalInvocationID <<&>> (.x)
   when (gid < Lit numVertices) do
     ubo <- #ubo
     dt <- let' ubo.dt
@@ -252,12 +254,11 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
         rσ <- let' $ (rσ_lut itype + rσ_lut jtype) / 2
         rπ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
-        rππ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
+        rππ <- let' $ (rππ_lut itype + rππ_lut jtype) / 2
 
         let bo'σ = fbo' r p_bo1 p_bo2 rσ
             bo'π = if itype >= Lit minπType && jtype >= Lit minπType then fbo' r p_bo3 p_bo4 rπ else 0
-            -- XXX JB a lot of these say π instead of ππ
-            bo'ππ = if itype >= Lit minππType && jtype >= Lit minπType then fbo' r p_bo5 p_bo6 rππ else 0
+            bo'ππ = if itype >= Lit minππType && jtype >= Lit minππType then fbo' r p_bo5 p_bo6 rππ else 0
         bo' <- let' $ bo'σ + bo'π + bo'ππ
 
         dr <- let' $ Vec2 (ipos.x - jpos.x) (ipos.y - jpos.y) ^/ r
@@ -266,7 +267,7 @@ updateAcc = Module $ entryPoint @"main" @Compute do
         let fdbo' pa pb ro = pa * pb * ((r / ro)**pb * fbo' r pa pb ro)
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
             dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
-            dbo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo5 p_bo6 rππ else 0
+            dbo'ππ = if itype >= Lit minππType && jtype >= Lit minππType then fdbo' p_bo5 p_bo6 rππ else 0
         dbo' <- let' $ ((dbo'σ + dbo'π + dbo'ππ) / r) *^ dr
 
         #_Δ' %= (+ bo')
@@ -295,18 +296,18 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
         rσ <- let' $ (rσ_lut itype + rσ_lut jtype) / 2
         rπ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
-        rππ <- let' $ (rπ_lut itype + rπ_lut jtype) / 2
+        rππ <- let' $ (rππ_lut itype + rππ_lut jtype) / 2
 
         let bo'σ = fbo' r p_bo1 p_bo2 rσ
             bo'π = if itype >= Lit minπType && jtype >= Lit minπType then fbo' r p_bo3 p_bo4 rπ else 0
-            bo'ππ = if itype >= Lit minππType && jtype >= Lit minπType then fbo' r p_bo5 p_bo6 rππ else 0
+            bo'ππ = if itype >= Lit minππType && jtype >= Lit minππType then fbo' r p_bo5 p_bo6 rππ else 0
         bo' <- let' $ bo'σ + bo'π + bo'ππ
 
         -- Have to insert these parentheses to prevent infinity/NaN. Maybe there's a more robust solution?
         let fdbo' pa pb ro = pa * pb * ((r / ro)**pb * fbo' r pa pb ro)
             dbo'σ = fdbo' p_bo1 p_bo2 rσ
             dbo'π = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo3 p_bo4 rπ else 0
-            dbo'ππ = if itype >= Lit minπType && jtype >= Lit minπType then fdbo' p_bo5 p_bo6 rππ else 0
+            dbo'ππ = if itype >= Lit minππType && jtype >= Lit minππType then fdbo' p_bo5 p_bo6 rππ else 0
         dbo' <- let' $ (dbo'σ + dbo'π + dbo'ππ) / r
         -- dbo'v <- let' $ dbo' *^ dr
 
