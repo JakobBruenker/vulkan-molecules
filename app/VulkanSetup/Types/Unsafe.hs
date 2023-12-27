@@ -1,6 +1,5 @@
 {-# OPTIONS_HADDOCK not-home #-}
 
-{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module VulkanSetup.Types.Unsafe where
@@ -19,7 +18,6 @@ import Vulkan hiding ( Display
 
 import Vulkan.CStruct.Extends
 import GHC.TypeNats (KnownNat)
-import GHC.Exts (Proxy#)
 
 import Data.Kind (Type)
 
@@ -190,8 +188,7 @@ type family UboInput usage
 data UboUsage = Graphics | Compute
 
 data VertexData = forall a n . (KnownNat n, Storable a) => MkVertexData (Sized.Vector n a)
-data UboData usage = forall a . Storable a => MkUboData { proxy  :: Proxy# a
-                                                        , update :: UboInput usage -> a -> a
+data UboData usage = forall a . Storable a => MkUboData { update :: UboInput usage -> a -> a
                                                         , ref    :: IORef a
                                                         }
 data StorageData = forall a n . (KnownNat n, Storable a) => MkStorageData (Sized.Vector n a)

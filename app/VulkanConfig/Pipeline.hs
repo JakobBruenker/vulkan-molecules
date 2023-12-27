@@ -10,7 +10,6 @@ import RIO.Partial qualified as Partial
 
 import Foreign.Storable.Tuple ()
 import Foreign (sizeOf, (.|.))
-import GHC.Exts (proxy#)
 import GHC.TypeNats (type (*))
 
 import Vulkan hiding ( MacOSSurfaceCreateInfoMVK(view)
@@ -68,7 +67,7 @@ type GraphicsUboContents = ("time" ::: Float,
 type instance UboInput Graphics = ("window width" ::: Int32, "window height" ::: Int32)
 
 graphicsUboData :: MonadIO m => m (UboData Graphics)
-graphicsUboData = MkUboData proxy# (\(w, h) (i, (_, _), world) -> (i + 1, (w, h), world)) <$>
+graphicsUboData = MkUboData (\(w, h) (i, (_, _), world) -> (i + 1, (w, h), world)) <$>
   newIORef @_ @GraphicsUboContents (0, (0, 0), (worldWidth, worldHeight))
 
 -- dt is in femtoseconds
@@ -76,7 +75,7 @@ type ComputeUboContents = ("dt" ::: Float, WorldSize)
 type instance UboInput Compute = ()
 
 computeUboData :: MonadIO m => m (UboData Compute)
-computeUboData = MkUboData proxy# (const id) <$>
+computeUboData = MkUboData (const id) <$>
   newIORef @_ @ComputeUboContents (0.02, (worldWidth, worldHeight))
 
 setupComputeCommands :: (MonadIO m, HasLogger, HasVulkanResources) => m ()
@@ -190,8 +189,8 @@ computeDescriptorSetLayoutInfo = [ zero{bindings = uniformBindings}
 
 vulkanConfig :: MonadIO m => m (Dict HasVulkanConfig)
 vulkanConfig = do
-  graphicsUboData'@(MkUboData graphicsUboProxy _ _) <- graphicsUboData
-  computeUboData'@(MkUboData computeUboProxy _ _) <- computeUboData
+  graphicsUboData'@(MkUboData @_ @graphicsUboType _ _) <- graphicsUboData
+  computeUboData'@(MkUboData @_ @computeUboType _ _) <- computeUboData
   let ?graphicsPipelineLayoutInfo      = graphicsPipelineLayoutInfo
       ?computePipelineLayoutInfo       = computePipelineLayoutInfo
       ?vertexInputInfo                 = vertexInputInfo
@@ -199,9 +198,9 @@ vulkanConfig = do
       ?vertexData                      = MkVertexData VulkanConfig.Pipeline.vertexData
       ?graphicsDescriptorSetLayoutInfo = graphicsDescriptorSetLayoutInfo
       ?computeDescriptorSetLayoutInfo  = computeDescriptorSetLayoutInfo
-      ?graphicsUniformBufferSize       = fromIntegral $ sizeOfProxied graphicsUboProxy
+      ?graphicsUniformBufferSize       = fromIntegral $ sizeOf' @graphicsUboType
       ?graphicsUboData                 = graphicsUboData'
-      ?computeUniformBufferSize        = fromIntegral $ sizeOfProxied computeUboProxy
+      ?computeUniformBufferSize        = fromIntegral $ sizeOf' @computeUboType
       ?computeUboData                  = computeUboData'
       ?computeStorageData              = computeStorageData
       ?desiredSwapchainImageNum        = 3
