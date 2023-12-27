@@ -27,6 +27,7 @@ import Utils
 import VulkanSetup.Types
 import VulkanSetup.Utils
 import VulkanSetup.Error
+import VulkanConfig.Pipeline (computeUniformBufferSize)
 
 initComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
                        HasDevice, HasComputeDescriptorSetLayouts, HasComputeUniformBuffer,
@@ -63,7 +64,7 @@ constructCommandBuffer = do
     (_, buffers) -> throw $ VkWrongNumberOfCommandBuffers 1 (fromIntegral $ V.length buffers)
 
 constructDescriptorSets :: (HasDevice, HasComputeUniformBuffer, HasComputeDescriptorSetLayoutInfo,
-                            HasComputeDescriptorSetLayouts, HasComputeUniformBufferSize,
+                            HasComputeDescriptorSetLayouts,
                             HasVertexStorageBuffer, HasVertexBufferInfo, HasComputeStorageBuffers,
                             KnownNat ComputeStorageBufferCount, HasComputeStorageData)
                         => ResIO (ReleaseKey, Vector DescriptorSet)
@@ -79,7 +80,7 @@ constructDescriptorSets = do
   descriptorSets <- allocateDescriptorSets ?device allocInfo
 
   let uniformBufferInfo = [ zero{ buffer = fst ?computeUniformBuffer
-                                , range = ?computeUniformBufferSize
+                                , range = computeUniformBufferSize
                                 } :: DescriptorBufferInfo
                           ]
   let descriptorWrites = concat $ (\f -> V.zipWith f ?computeDescriptorSetLayoutInfo descriptorSets)

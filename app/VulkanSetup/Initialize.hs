@@ -46,6 +46,7 @@ import VulkanSetup.Utils
 import VulkanSetup.Types
 import VulkanSetup.ComputeMutables
 import VulkanSetup.Error
+import VulkanConfig.Pipeline (graphicsUniformBufferSize, computeUniformBufferSize)
 
 initGLFW :: HasLogger => ResIO (Dict HasGLFW)
 initGLFW = do
@@ -418,14 +419,14 @@ initComputeStorageBuffers = do
   pure Dict
 
 initGraphicsUniformBuffers :: (HasLogger, HasSurface, HasPhysicalDevice, HasDevice,
-                               HasGraphicsUniformBufferSize, HasDesiredSwapchainImageNum)
+                               HasDesiredSwapchainImageNum)
                            => ResIO (Dict HasGraphicsUniformBuffers)
 initGraphicsUniformBuffers = do
   surfCaps <- getPhysicalDeviceSurfaceCapabilitiesKHR ?physicalDevice ?surface
 
   -- We need at least as many buffers as we have images
   let numBuffers = max (fromIntegral surfCaps.minImageCount) (fromIntegral ?desiredSwapchainImageNum)
-      bufInfo = zero{ size = ?graphicsUniformBufferSize
+      bufInfo = zero{ size = graphicsUniformBufferSize
                     , usage = BUFFER_USAGE_UNIFORM_BUFFER_BIT
                     , sharingMode = SHARING_MODE_EXCLUSIVE
                     } :: BufferCreateInfo '[]
@@ -439,11 +440,10 @@ initGraphicsUniformBuffers = do
 
   pure Dict
 
-initComputeUniformBuffer :: (HasLogger, HasPhysicalDevice, HasDevice,
-                             HasComputeUniformBufferSize)
+initComputeUniformBuffer :: (HasLogger, HasPhysicalDevice, HasDevice)
                          => ResIO (Dict HasComputeUniformBuffer)
 initComputeUniformBuffer = do
-  let bufInfo = zero{ size = ?computeUniformBufferSize
+  let bufInfo = zero{ size = computeUniformBufferSize
                     , usage = BUFFER_USAGE_UNIFORM_BUFFER_BIT
                     , sharingMode = SHARING_MODE_EXCLUSIVE
                     } :: BufferCreateInfo '[]

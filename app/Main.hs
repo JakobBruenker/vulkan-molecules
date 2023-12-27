@@ -193,7 +193,7 @@ drawFrame currentFrame = do
           | otherwise -> Don'tRecreate
 
 updateGraphicsUniformBuffer :: (MonadUnliftIO m, HasDevice, HasGraphicsUboData,
-                                HasGraphicsUniformBuffers, HasGraphicsUniformBufferSize)
+                                HasGraphicsUniformBuffers)
                             => Word32 -> Int32 -> Int32 -> m ()
 updateGraphicsUniformBuffer currentImageIndex windowWidth windowHeight = do
   MkUboData{update, ref} <- pure ?graphicsUboData
@@ -201,7 +201,7 @@ updateGraphicsUniformBuffer currentImageIndex windowWidth windowHeight = do
   copyGraphicsUniformBuffer currentImageIndex
 
 copyGraphicsUniformBuffer :: (MonadUnliftIO m, HasDevice, HasGraphicsUboData,
-                                HasGraphicsUniformBuffers, HasGraphicsUniformBufferSize)
+                                HasGraphicsUniformBuffers)
                             => Word32 -> m ()
 copyGraphicsUniformBuffer imageIndex = do
   MkUboData{ref} <- pure ?graphicsUboData
@@ -210,12 +210,12 @@ copyGraphicsUniformBuffer imageIndex = do
     do throw VkUniformBufferIndexOutOfRange
     do pure . snd
     do ?graphicsUniformBuffers ^? ix (fromIntegral imageIndex)
-  withMappedMemory ?device memory 0 ?graphicsUniformBufferSize zero bracket \target ->
+  withMappedMemory ?device memory 0 graphicsUniformBufferSize zero bracket \target ->
     liftIO $ with time \(castPtr -> source) ->
-      copyBytes target source $ fromIntegral ?graphicsUniformBufferSize
+      copyBytes target source $ fromIntegral graphicsUniformBufferSize
 
 updateComputeUniformBuffer :: (MonadUnliftIO m, HasDevice,
-                               HasComputeUboData, HasComputeUniformBuffer, HasComputeUniformBufferSize)
+                               HasComputeUboData, HasComputeUniformBuffer)
                            => m ()
 updateComputeUniformBuffer = do
   MkUboData{update, ref} <- pure ?computeUboData
@@ -223,12 +223,12 @@ updateComputeUniformBuffer = do
   copyComputeUniformBuffer
 
 copyComputeUniformBuffer :: (MonadUnliftIO m, HasDevice,
-                             HasComputeUboData, HasComputeUniformBuffer, HasComputeUniformBufferSize)
+                             HasComputeUboData, HasComputeUniformBuffer)
                          => m ()
 copyComputeUniformBuffer = do
   MkUboData{ref} <- pure ?computeUboData
   subIndex <- readIORef ref
   withMappedMemory
-    ?device (snd ?computeUniformBuffer) 0 ?computeUniformBufferSize zero bracket \target ->
+    ?device (snd ?computeUniformBuffer) 0 computeUniformBufferSize zero bracket \target ->
       liftIO $ with subIndex \(castPtr -> source) ->
-        copyBytes target source $ fromIntegral ?computeUniformBufferSize
+        copyBytes target source $ fromIntegral computeUniformBufferSize

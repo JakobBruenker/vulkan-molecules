@@ -202,8 +202,6 @@ type HasComputeDescriptorSetLayoutInfo =
 type HasVertexInputInfo = ?vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
 type HasVertexBufferInfo = ?vertexBufferInfo :: BufferCreateInfo '[]
 type HasVertexData = ?vertexData :: VertexData
-type HasGraphicsUniformBufferSize = ?graphicsUniformBufferSize :: DeviceSize
-type HasComputeUniformBufferSize = ?computeUniformBufferSize :: DeviceSize
 type HasGraphicsUboData = ?graphicsUboData :: UboData Graphics
 type HasComputeUboData = ?computeUboData :: UboData Compute
 type HasComputeStorageData = ?computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
@@ -215,8 +213,6 @@ type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
                        , HasVertexInputInfo
                        , HasVertexBufferInfo
                        , HasVertexData
-                       , HasGraphicsUniformBufferSize
-                       , HasComputeUniformBufferSize
                        , HasGraphicsUboData
                        , HasComputeUboData
                        , HasComputeStorageData

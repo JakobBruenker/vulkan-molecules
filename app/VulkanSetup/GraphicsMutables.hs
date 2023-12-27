@@ -29,6 +29,7 @@ import Utils
 import VulkanSetup.Types
 import VulkanSetup.Utils
 import VulkanSetup.Error
+import VulkanConfig.Pipeline (graphicsUniformBufferSize)
 
 initGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
                          HasGraphicsUniformBuffers)
@@ -340,7 +341,7 @@ constructImageWithView Extent2D{width, height} samples format usage aspectMask =
   pure ([imgKey, imgViewKey, memKey], (image, imgView))
 
 constructImageRelateds :: (HasLogger, HasDevice, HasGraphicsCommandPool,
-                           HasGraphicsDescriptorSetLayout, HasGraphicsUniformBufferSize,
+                           HasGraphicsDescriptorSetLayout,
                            HasGraphicsUniformBuffers, HasMsaaSamples)
                        => Extent2D -> Format -> RenderPass -> SwapchainKHR
                        -> ("colorImageView" ::: ImageView) -> ("depthImageView" ::: ImageView)
@@ -367,7 +368,7 @@ constructCommandBuffers count = do
   withCommandBuffers ?device commandBuffersInfo allocate
 
 constructDescriptorSets :: (HasDevice, HasGraphicsDescriptorSetLayout,
-                            HasGraphicsUniformBufferSize, HasGraphicsUniformBuffers)
+                            HasGraphicsUniformBuffers)
                         => Natural -> ResIO (ReleaseKey, Vector DescriptorSet)
 constructDescriptorSets count = do
   let descriptorCount :: Integral a => a
@@ -387,7 +388,7 @@ constructDescriptorSets count = do
       do ?graphicsUniformBuffers ^? ix i
     let bufferInfo = [ zero{ buffer
                            , offset = 0
-                           , range = ?graphicsUniformBufferSize
+                           , range = graphicsUniformBufferSize
                            } :: DescriptorBufferInfo
                      ]
         descriptorWrite = SomeStruct zero{ dstSet

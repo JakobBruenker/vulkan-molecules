@@ -66,6 +66,9 @@ type GraphicsUboContents = ("time" ::: Float,
   WorldSize)
 type instance UboInput Graphics = ("window width" ::: Int32, "window height" ::: Int32)
 
+graphicsUniformBufferSize :: DeviceSize
+graphicsUniformBufferSize = fromIntegral $ sizeOf' @GraphicsUboContents
+
 graphicsUboData :: MonadIO m => m (UboData Graphics)
 graphicsUboData = MkUboData (\(w, h) (i, (_, _), world) -> (i + 1, (w, h), world)) <$>
   newIORef @_ @GraphicsUboContents (0, (0, 0), (worldWidth, worldHeight))
@@ -73,6 +76,9 @@ graphicsUboData = MkUboData (\(w, h) (i, (_, _), world) -> (i + 1, (w, h), world
 -- dt is in femtoseconds
 type ComputeUboContents = ("dt" ::: Float, WorldSize)
 type instance UboInput Compute = ()
+
+computeUniformBufferSize :: DeviceSize
+computeUniformBufferSize = fromIntegral $ sizeOf' @ComputeUboContents
 
 computeUboData :: MonadIO m => m (UboData Compute)
 computeUboData = MkUboData (const id) <$>
@@ -189,8 +195,8 @@ computeDescriptorSetLayoutInfo = [ zero{bindings = uniformBindings}
 
 vulkanConfig :: MonadIO m => m (Dict HasVulkanConfig)
 vulkanConfig = do
-  graphicsUboData'@(MkUboData @_ @graphicsUboType _ _) <- graphicsUboData
-  computeUboData'@(MkUboData @_ @computeUboType _ _) <- computeUboData
+  graphicsUboData' <- graphicsUboData
+  computeUboData' <- computeUboData
   let ?graphicsPipelineLayoutInfo      = graphicsPipelineLayoutInfo
       ?computePipelineLayoutInfo       = computePipelineLayoutInfo
       ?vertexInputInfo                 = vertexInputInfo
@@ -198,9 +204,7 @@ vulkanConfig = do
       ?vertexData                      = MkVertexData VulkanConfig.Pipeline.vertexData
       ?graphicsDescriptorSetLayoutInfo = graphicsDescriptorSetLayoutInfo
       ?computeDescriptorSetLayoutInfo  = computeDescriptorSetLayoutInfo
-      ?graphicsUniformBufferSize       = fromIntegral $ sizeOf' @graphicsUboType
       ?graphicsUboData                 = graphicsUboData'
-      ?computeUniformBufferSize        = fromIntegral $ sizeOf' @computeUboType
       ?computeUboData                  = computeUboData'
       ?computeStorageData              = computeStorageData
       ?desiredSwapchainImageNum        = 3
