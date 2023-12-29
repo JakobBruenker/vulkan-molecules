@@ -183,8 +183,11 @@ initPhysicalDevice = do
   pure dict
   where
     score :: (MonadIO m, HasPhysicalDevice) => m Integer
-    score = (bool 0 1000 . (PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType <$>) $
-      getPhysicalDeviceProperties ?physicalDevice
+    score = do
+      props <- getPhysicalDeviceProperties ?physicalDevice
+      pure . sum @[] $ (\(p, points) -> [ points | p props ]) =<<
+        [ ((PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ==) . deviceType, 1000)
+        ]
 
     findQueueFamilies :: (MonadResource m, HasLogger, HasPhysicalDevice)
                       => MaybeT m (Dict HasQueueFamilyIndices)
