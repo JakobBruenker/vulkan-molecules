@@ -19,7 +19,6 @@ import Control.Monad.Trans.Resource (allocate, ResIO, MonadResource, ReleaseKey,
 import Data.Coerce (coerce)
 import Data.Foldable (find)
 import Data.List (nub)
-import Data.Function (applyWhen)
 import Foreign (malloc, nullPtr, Storable (peek, sizeOf), copyBytes, castPtr)
 import Foreign.Storable.Tuple ()
 import Control.Lens.Combinators (ifind)
@@ -292,7 +291,7 @@ initQueues = do
 
 deviceExtensions :: HasDebug => Vector ByteString
 deviceExtensions =
-  applyWhen ?enableDebug (V.cons KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME)
+  [ KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME | ?enableDebug ] <>
   [ KHR_SWAPCHAIN_EXTENSION_NAME
   , KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME
   ]

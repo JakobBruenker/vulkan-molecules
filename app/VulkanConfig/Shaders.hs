@@ -455,4 +455,4 @@ compileAllShaders = sequence_
   , compileTo updatePosPath spirv updatePos
   , compileTo updateAccPath spirv updateAcc
   ]
-  where spirv = applyWhen ?enableDebug (Debug :) [SPIRV $ Version 1 3]
+  where spirv = (if ?enableDebug then [Debug] else []) <> [SPIRV $ Version 1 3]
