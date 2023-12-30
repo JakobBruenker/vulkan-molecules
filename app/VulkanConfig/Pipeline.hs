@@ -195,8 +195,6 @@ computeDescriptorSetLayoutInfo = [ zero{bindings = uniformBindings}
 
 vulkanConfig :: MonadIO m => m (Dict HasVulkanConfig)
 vulkanConfig = do
-  graphicsUboData' <- graphicsUboData
-  computeUboData' <- computeUboData
   let ?graphicsPipelineLayoutInfo      = graphicsPipelineLayoutInfo
       ?computePipelineLayoutInfo       = computePipelineLayoutInfo
       ?vertexInputInfo                 = vertexInputInfo
@@ -204,8 +202,8 @@ vulkanConfig = do
       ?vertexData                      = MkVertexData VulkanConfig.Pipeline.vertexData
       ?graphicsDescriptorSetLayoutInfo = graphicsDescriptorSetLayoutInfo
       ?computeDescriptorSetLayoutInfo  = computeDescriptorSetLayoutInfo
-      ?graphicsUboData                 = graphicsUboData'
-      ?computeUboData                  = computeUboData'
+      ?graphicsUboData                 = !graphicsUboData
+      ?computeUboData                  = !computeUboData
       ?computeStorageData              = computeStorageData
       ?desiredSwapchainImageNum        = 3
   pure Dict

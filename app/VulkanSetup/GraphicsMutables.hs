@@ -30,13 +30,13 @@ import VulkanSetup.Types
 import VulkanSetup.Utils
 import VulkanSetup.Error
 import VulkanConfig.Pipeline (graphicsUniformBufferSize)
+import Data.Ord (clamp)
 
 initGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
                          HasGraphicsUniformBuffers)
                      => ResIO (Dict HasGraphicsMutables)
 initGraphicsMutables = do
-  graphicsMutables <- mkMResources =<< constructGraphicsMutables
-  let ?graphicsMutables = graphicsMutables
+  let ?graphicsMutables = !do mkMResources =<< constructGraphicsMutables
   pure Dict
 
 constructGraphicsMutables :: (HasLogger, HasGraphicsResources, HasShaderPaths, HasVulkanConfig,
@@ -63,10 +63,9 @@ constructGraphicsMutables = do
 
 constructSwapchain :: (HasLogger, HasDevice)
                    => SwapchainCreateInfoKHR '[] -> ResIO (ReleaseKey, SwapchainKHR)
-constructSwapchain scInfo = do
-  swapchain <- withSwapchainKHR ?device scInfo Nothing allocate
-  logDebug "Created swapchain."
-  pure swapchain
+constructSwapchain scInfo =
+  withSwapchainKHR ?device scInfo Nothing allocate
+  <* logDebug "Created swapchain."
 
 waitWhileMinimized :: (HasWindow, MonadIO m) => m ()
 waitWhileMinimized = liftIO $ whileM_ (allOf both (== 0) <$> GLFW.getFramebufferSize ?window)
@@ -206,12 +205,10 @@ constructGraphicsPipeline renderPass extent layout = do
 
         withGraphicsPipelines ?device zero pipelineInfo Nothing allocate
 
-  graphicsPipeline <- case pipelines of
+  case pipelines of
     [pipeline] -> pure (releasePipelines, pipeline)
     (length -> num) -> throw $ VkWrongNumberOfGraphicsPipelines 1 $ fromIntegral num
-
-  logDebug "Created graphics pipeline."
-  pure graphicsPipeline
+  <* logDebug "Created graphics pipeline."
 
 constructGraphicsRenderPass :: (HasLogger, HasGraphicsResources)
                             => Format -> ResIO (ReleaseKey, RenderPass)
@@ -275,10 +272,8 @@ constructGraphicsRenderPass colorFormat = do
                            , dependencies = [dependency]
                            } :: RenderPassCreateInfo '[]
 
-  renderPass <- withRenderPass ?device renderPassInfo Nothing allocate
-
-  logDebug "Created render pass."
-  pure renderPass
+  withRenderPass ?device renderPassInfo Nothing allocate
+  <* logDebug "Created render pass."
 
 constructDepthResources :: (HasPhysicalDevice, HasDevice, HasMsaaSamples)
                         => Extent2D -> ResIO ([ReleaseKey], (Image, ImageView))

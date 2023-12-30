@@ -9,12 +9,12 @@ import RIO.Vector qualified as V
 import RIO.Vector.Storable.Unsafe qualified as VS
 
 import Control.Lens ((??), ix)
-import Control.Monad.Extra (fromMaybeM, ifM, maybeM)
+import Control.Monad.Extra (fromMaybeM, maybeM)
 import Data.Bits (Bits((.&.)), testBit, (.|.), xor)
 import Data.Semigroup (Arg(..), Max (..), Semigroup (sconcat))
 import System.Environment (getProgName)
 import Control.Applicative (ZipList(..))
-import Control.Monad.Trans.Maybe (runMaybeT, MaybeT)
+import Control.Monad.Trans.Maybe (runMaybeT, MaybeT(..))
 import Control.Monad.Trans.Resource (allocate, ResIO, MonadResource, ReleaseKey, release)
 import Data.Coerce (coerce)
 import Data.Foldable (find)
@@ -49,11 +49,11 @@ import VulkanConfig.Pipeline (graphicsUniformBufferSize, computeUniformBufferSiz
 
 initGLFW :: HasLogger => ResIO (Dict HasGLFW)
 initGLFW = do
-  (_, glfwToken) <- allocate
-    do liftIO $ ifM GLFW.init do pure UnsafeMkGLFWToken
-                              do throw GLFWInitError
-    do const $ liftIO GLFW.terminate
-  let ?glfw = glfwToken
+  let ?glfw = snd !do
+        allocate
+          do if | !GLFW.init -> pure UnsafeMkGLFWToken
+                | otherwise  -> throw GLFWInitError
+          do const $ liftIO GLFW.terminate
 
   logDebug "InitializedGLFW."
   pure Dict
@@ -73,8 +73,7 @@ initInstance = do
                                , enabledLayerNames = ?validationLayers
                                }
 
-  (_, inst) <- withInstance instanceCreateInfo Nothing allocate
-  let ?instance = inst
+  let ?instance = snd !do withInstance instanceCreateInfo Nothing allocate
 
   logDebug "Created instance."
   pure Dict
@@ -83,7 +82,7 @@ initWindow :: (HasLogger, HasConfig, HasGLFW) => ResIO (Dict (HasWindow, HasFram
 initWindow = do
   !_ <- pure ?glfw -- making sure GLFW really is initialized
 
-  framebufferResized <- newIORef False
+  let ?framebufferResized = !do newIORef False
 
   monitor <- preview (ix $ fromIntegral ?monitorIndex) . concat <$> liftIO GLFW.getMonitors
   when (?fullscreen && isNothing monitor) $
@@ -92,47 +91,46 @@ initWindow = do
   logDebug $ "Fullscreen: " <> displayShow actuallyFullscreen
   ((xPos, yPos), (width, height)) <- fromMaybe
     ((0, 0), (fromIntegral ?windowWidth, fromIntegral ?windowHeight)) <$> if
-    | actuallyFullscreen, Just mon <- monitor -> do
-      videoMode <- liftIO $ GLFW.getVideoMode mon
-      if | Just vm <- videoMode -> do
-           pos <- liftIO $ GLFW.getMonitorPos mon
-           pure $ Just (pos, (vm.videoModeWidth, vm.videoModeHeight))
-         | otherwise -> do
-           logWarn "Couldn't get video mode. Using default window size."
-           pure Nothing
+    | actuallyFullscreen, Just mon <- monitor ->
+      liftIO $ GLFW.getVideoMode mon >>= \case
+        Just vm -> do
+          let windowPos = !do liftIO $ GLFW.getMonitorPos mon
+              windowSize = (vm.videoModeWidth, vm.videoModeHeight)
+          pure $ Just (windowPos, windowSize)
+        Nothing -> do
+          logWarn "Couldn't get video mode. Using default window size."
+          pure Nothing
     | otherwise -> pure Nothing
   logDebug $ "Window position: " <> displayShow (xPos, yPos)
   logDebug $ "Window size: " <> displayShow (width, height)
 
-  (_, window) <- allocate
-    do traverse_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
-                                     , GLFW.WindowHint'Resizable (not actuallyFullscreen)
-                                     , GLFW.WindowHint'Decorated (not actuallyFullscreen)
-                                     , GLFW.WindowHint'Floating actuallyFullscreen
-                                     ]
-       progName <- getProgName
-       maybeM do throw GLFWWindowError
-              do \window -> do GLFW.setWindowPos window xPos yPos
-                               GLFW.setFramebufferSizeCallback window $ Just \_ _ _ ->
-                                 writeIORef framebufferResized True
-                               pure window
-              do GLFW.createWindow width height progName Nothing Nothing
-    do GLFW.destroyWindow
-  let ?window = window
-      ?framebufferResized = framebufferResized
+  let ?window = snd !do
+        allocate
+          do traverse_ @[] GLFW.windowHint [ GLFW.WindowHint'ClientAPI GLFW.ClientAPI'NoAPI
+                                           , GLFW.WindowHint'Resizable (not actuallyFullscreen)
+                                           , GLFW.WindowHint'Decorated (not actuallyFullscreen)
+                                           , GLFW.WindowHint'Floating actuallyFullscreen
+                                           ]
+             maybeM do throw GLFWWindowError
+                     do \window -> do GLFW.setWindowPos window xPos yPos
+                                      GLFW.setFramebufferSizeCallback window $ Just \_ _ _ ->
+                                        writeIORef ?framebufferResized True
+                                      pure window
+                     do GLFW.createWindow width height !getProgName Nothing Nothing
+          do GLFW.destroyWindow
 
   logDebug "Created window."
   pure Dict
 
 initSurface :: (HasLogger, HasInstance, HasWindow) => ResIO (Dict HasSurface)
 initSurface = do
-  (_, surface) <- allocate
-    do liftIO do
-         surfacePtr <- malloc @SurfaceKHR
-         result <- GLFW.createWindowSurface (instanceHandle ?instance) ?window nullPtr surfacePtr
-         peek =<< catchVk (coerce @Int32 result, surfacePtr)
-    do destroySurfaceKHR ?instance ?? Nothing
-  let ?surface = surface
+  let ?surface = snd !do
+        allocate
+          do liftIO do
+              surfacePtr <- malloc @SurfaceKHR
+              result <- GLFW.createWindowSurface (instanceHandle ?instance) ?window nullPtr surfacePtr
+              peek =<< catchVk (coerce @Int32 result, surfacePtr)
+          do destroySurfaceKHR ?instance ?? Nothing
 
   logDebug "Created surface."
   pure Dict
@@ -143,12 +141,11 @@ initSurface = do
 
 initValidationLayers :: HasEnableValidationLayers => ResIO (Dict HasValidationLayers)
 initValidationLayers = do
-  validationLayers <- fmap V.fromList $ ?enableValidationLayers & bool (pure []) do
-    (_, properties) <- enumerateInstanceLayerProperties
-    case NE.nonEmpty $ filter (not . (properties `hasLayer`)) layers of
-      Nothing          -> pure layers
-      Just unsupported -> throw $ VkValidationLayersNotSupported unsupported
-  let ?validationLayers = validationLayers
+  let ?validationLayers = !do
+        fmap V.fromList $ ?enableValidationLayers & bool (pure []) do
+          case NE.nonEmpty $ filter (not . (snd !enumerateInstanceLayerProperties `hasLayer`)) layers of
+            Nothing          -> pure layers
+            Just unsupported -> throw $ VkValidationLayersNotSupported unsupported
   pure Dict
   where
     hasLayer props = V.elem ?? V.map layerName props
@@ -191,51 +188,44 @@ initPhysicalDevice = do
     findQueueFamilies :: (MonadResource m, HasLogger, HasPhysicalDevice)
                       => MaybeT m (Dict HasQueueFamilyIndices)
     findQueueFamilies = do
-      dName <- devName
       props <- getPhysicalDeviceQueueFamilyProperties ?physicalDevice
 
-      let findByFlag flag name = do
+      let logResult name queueIndex = logDebug $
+            "Found " <> name <> " queue family (index " <> display queueIndex <> ") on " <>
+            !devName <> "."
+
+          findByFlag flag name = do
             Just queue <- pure $ fromIntegral <$>
               V.findIndex (\p -> queueFlags p .&. flag > zero) props
-            logResult name queue dName
+            logResult name queue
             pure queue
 
-      graphics <- findByFlag QUEUE_GRAPHICS_BIT "graphics"
+      let ?graphicsQueueFamily = !do findByFlag QUEUE_GRAPHICS_BIT "graphics"
 
       let indices = ZipList (toList props) *> [0..]
           surfaceSupport = getPhysicalDeviceSurfaceSupportKHR ?physicalDevice ?? ?surface
-      Just present <- fmap fst . find snd <$> (traverse . traverseToSnd) surfaceSupport indices
-      logResult "present" present dName
+      let ?presentQueueFamily = !do joinMaybeT $ fmap fst . find snd <$> (traverse . traverseToSnd) surfaceSupport indices
+      logResult "present" ?presentQueueFamily
 
-      compute <- findByFlag QUEUE_COMPUTE_BIT "compute"
+      let ?computeQueueFamily = !do findByFlag QUEUE_COMPUTE_BIT "compute"
 
-      let ?graphicsQueueFamily = graphics
-          ?presentQueueFamily  = present
-          ?computeQueueFamily  = compute
       pure Dict
-      where
-        logResult name queueIndex dName = logDebug $
-          "Found " <> name <> " queue family (index " <> display queueIndex <> ") on " <>
-          dName <> "."
 
     checkDeviceExtensionSupport :: (MonadIO m, HasPhysicalDevice, HasDebug) => m Bool
     checkDeviceExtensionSupport = do
       exts <- fmap extensionName . snd <$> enumerateDeviceExtensionProperties ?physicalDevice Nothing
-      let yes = V.all (`elem` exts) deviceExtensions
-      dName <- devName
-      logDebug $ dName <> " " <> bool "doesn't support" "supports" yes <>
+      let isSupported = V.all (`elem` exts) deviceExtensions
+      logDebug $ !devName <> " " <> bool "doesn't support" "supports" isSupported <>
                  " all extensions in " <> displayShow deviceExtensions <> "."
-      pure yes
+      pure isSupported
 
     querySwapchainSupport :: (MonadIO m, HasPhysicalDevice)
                           => MaybeT m (Dict HasSwapchainSupport)
     querySwapchainSupport = do
-      let formats      = getPhysicalDeviceSurfaceFormatsKHR ?physicalDevice ?surface
-          presentModes = getPhysicalDeviceSurfacePresentModesKHR ?physicalDevice ?surface
-      Just swapchainFormats      <- NE.nonEmpty . toList . snd <$> formats
-      Just swapchainPresentModes <- NE.nonEmpty . toList . snd <$> presentModes
-      let ?swapchainFormats      = swapchainFormats
-          ?swapchainPresentModes = swapchainPresentModes
+      let ?swapchainPresentModes = !do joinMaybeT $ NE.nonEmpty . toList . snd <$>
+                                         getPhysicalDeviceSurfacePresentModesKHR ?physicalDevice ?surface
+          ?swapchainFormats      = !do joinMaybeT $ NE.nonEmpty . toList . snd <$>
+                                         getPhysicalDeviceSurfaceFormatsKHR ?physicalDevice ?surface
       pure Dict
 
     getSampleCount :: (MonadIO m, HasPhysicalDevice) => m (Dict HasMsaaSamples)
@@ -249,8 +239,7 @@ initPhysicalDevice = do
                           .&. desired /= zero
                          then desired
                          else SAMPLE_COUNT_1_BIT
-      dName <- devName
-      logDebug $ "Using " <> displayShow ?msaaSamples <> " for MSAA on " <> dName <> "."
+      logDebug $ "Using " <> displayShow ?msaaSamples <> " for MSAA on " <> !devName <> "."
       pure Dict
 
     devName :: (MonadIO m, HasPhysicalDevice) => m Utf8Builder
@@ -268,8 +257,7 @@ initDevice = do
                              , enabledFeatures =
                                  Just zero{sampleRateShading = ?msaaSamples /= SAMPLE_COUNT_1_BIT}
                              }
-  (_, device) <- withDevice ?physicalDevice deviceCreateInfo Nothing allocate
-  let ?device = device
+  let ?device = snd !do withDevice ?physicalDevice deviceCreateInfo Nothing allocate
 
   logDebug "Created logical device."
   pure Dict
@@ -277,14 +265,11 @@ initDevice = do
 initQueues :: (HasLogger, HasDevice, HasQueueFamilyIndices) => ResIO (Dict HasQueues)
 initQueues = do
   let getQueue = getDeviceQueue ?device
-  graphicsQueue <- getQueue ?graphicsQueueFamily 0
-  presentQueue  <- getQueue ?presentQueueFamily  0
-  -- Is it better to use a compute queue that's different from the graphics
-  -- queue? Not sure. Doing it for now though.
-  computeQueue  <- getQueue ?computeQueueFamily  1
-  let ?graphicsQueue = graphicsQueue
-      ?presentQueue  = presentQueue
-      ?computeQueue  = computeQueue
+  let ?graphicsQueue = !do getQueue ?graphicsQueueFamily 0
+      ?presentQueue  = !do getQueue ?presentQueueFamily  0
+      -- Is it better to use a compute queue that's different from the graphics
+      -- queue? Not sure. Doing it for now though.
+      ?computeQueue  = !do getQueue ?computeQueueFamily  1
 
   logDebug "Obtained device queues."
   pure Dict
@@ -301,13 +286,11 @@ initCommandPools :: (HasLogger, HasDevice, HasGraphicsQueueFamily, HasComputeQue
 initCommandPools = do
   let graphicsCommandPoolInfo = zero{ queueFamilyIndex = ?graphicsQueueFamily
                                     } :: CommandPoolCreateInfo
-  (_, graphicsPool) <- withCommandPool ?device graphicsCommandPoolInfo Nothing allocate
-  let ?graphicsCommandPool = graphicsPool
+  let ?graphicsCommandPool = snd !do withCommandPool ?device graphicsCommandPoolInfo Nothing allocate
 
   let computeCommandPoolInfo = zero{ queueFamilyIndex = ?computeQueueFamily
                                    } :: CommandPoolCreateInfo
-  (_, computePool) <- withCommandPool ?device computeCommandPoolInfo Nothing allocate
-  let ?computeCommandPool = computePool
+  let ?computeCommandPool = snd !do withCommandPool ?device computeCommandPoolInfo Nothing allocate
 
   logDebug "Created command pools."
   pure Dict
@@ -364,8 +347,7 @@ initVertexBuffer = do
                                         } :: BufferCreateInfo '[]
       stagingBufProps = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
 
-  ((sBufKey, stagingBuffer), (sMemKey, stagingMemory)) <-
-    constructBuffer stagingBufInfo stagingBufProps
+  ((sBufKey, stagingBuffer), (sMemKey, stagingMemory)) <- constructBuffer stagingBufInfo stagingBufProps
 
   liftIO $ withMappedMemory ?device stagingMemory 0 ?vertexBufferInfo.size zero bracket \target -> do
     MkVertexData vertexData <- pure ?vertexData
@@ -373,10 +355,9 @@ initVertexBuffer = do
       copyBytes target source $ fromIntegral ?vertexBufferInfo.size
 
   let vertBufProps = MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-  ((_, vertexBuffer), _) <- constructBuffer ?vertexBufferInfo vertBufProps
-  let ?vertexBuffer = vertexBuffer
+  let ?vertexBuffer = snd . fst $ !do constructBuffer ?vertexBufferInfo vertBufProps
 
-  copyBuffer ?graphicsCommandPool ?graphicsQueue stagingBuffer vertexBuffer ?vertexBufferInfo.size
+  copyBuffer ?graphicsCommandPool ?graphicsQueue stagingBuffer ?vertexBuffer ?vertexBufferInfo.size
 
   -- We don't need the staging buffer anymore
   traverse_ @[] release [sBufKey, sMemKey]
@@ -389,33 +370,33 @@ initComputeStorageBuffers :: (HasLogger, HasPhysicalDevice, HasDevice, HasComput
                               HasComputeQueue, HasComputeStorageData)
                           => ResIO (Dict HasComputeStorageBuffers)
 initComputeStorageBuffers = do
-  storageBuffers <- for ?computeStorageData \(MkStorageData storageData) -> do
-    let size = fromIntegral $ sizeOf storageData
-        stagingBufInfo = zero{ size
-                             , usage = BUFFER_USAGE_TRANSFER_SRC_BIT
-                             , sharingMode = SHARING_MODE_EXCLUSIVE
-                             }
-        stagingBufProps = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
-    ((sBufKey, stagingBuffer), (sMemKey, stagingMemory)) <-
-      constructBuffer stagingBufInfo stagingBufProps
+  let ?computeStorageBuffers = !do
+        for ?computeStorageData \(MkStorageData storageData) -> do
+          let size = fromIntegral $ sizeOf storageData
+              stagingBufInfo = zero{ size
+                                  , usage = BUFFER_USAGE_TRANSFER_SRC_BIT
+                                  , sharingMode = SHARING_MODE_EXCLUSIVE
+                                  }
+              stagingBufProps = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
+          ((sBufKey, stagingBuffer), (sMemKey, stagingMemory)) <-
+            constructBuffer stagingBufInfo stagingBufProps
 
-    liftIO $ withMappedMemory ?device stagingMemory 0 size zero bracket \target -> do
-      VS.unsafeWith (Sized.SomeSized storageData) \(castPtr -> source) ->
-        copyBytes target source $ sizeOf storageData
+          liftIO $ withMappedMemory ?device stagingMemory 0 size zero bracket \target -> do
+            VS.unsafeWith (Sized.SomeSized storageData) \(castPtr -> source) ->
+              copyBytes target source $ sizeOf storageData
 
-    let storageBufInfo = stagingBufInfo{ usage = BUFFER_USAGE_TRANSFER_DST_BIT
-                                             .|. BUFFER_USAGE_STORAGE_BUFFER_BIT
-                                       } :: BufferCreateInfo '[]
-        storageBufProps = MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-    ((_, storageBuffer), _) <- constructBuffer storageBufInfo storageBufProps
+          let storageBufInfo = stagingBufInfo{ usage = BUFFER_USAGE_TRANSFER_DST_BIT
+                                                  .|. BUFFER_USAGE_STORAGE_BUFFER_BIT
+                                            } :: BufferCreateInfo '[]
+              storageBufProps = MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+          ((_, storageBuffer), _) <- constructBuffer storageBufInfo storageBufProps
 
-    copyBuffer ?computeCommandPool ?computeQueue stagingBuffer storageBuffer size
+          copyBuffer ?computeCommandPool ?computeQueue stagingBuffer storageBuffer size
 
-    -- We don't need the staging buffer anymore
-    traverse_ @[] release [sBufKey, sMemKey]
+          -- We don't need the staging buffer anymore
+          traverse_ @[] release [sBufKey, sMemKey]
 
-    pure storageBuffer
-  let ?computeStorageBuffers = storageBuffers
+          pure storageBuffer
 
   logDebug "Created compute storage buffers."
   pure Dict
@@ -433,12 +414,12 @@ initGraphicsUniformBuffers = do
                     , sharingMode = SHARING_MODE_EXCLUSIVE
                     } :: BufferCreateInfo '[]
       properties = MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. MEMORY_PROPERTY_HOST_COHERENT_BIT
-  buffers <- V.replicateM numBuffers do
-    ((_, buffer), (_, memory)) <- constructBuffer bufInfo properties
-    pure (buffer, memory)
-  let ?graphicsUniformBuffers = buffers
+  let ?graphicsUniformBuffers = !do
+        V.replicateM numBuffers do
+          ((_, buffer), (_, memory)) <- constructBuffer bufInfo properties
+          pure (buffer, memory)
 
-  logDebug "Created uniform buffers."
+  logDebug "Created graphics uniform buffers."
 
   pure Dict
 
@@ -453,23 +434,23 @@ initComputeUniformBuffer = do
   ((_, buffer), (_, memory)) <- constructBuffer bufInfo properties
   let ?computeUniformBuffer = (buffer, memory)
 
-  logDebug "Created uniform buffers."
+  logDebug "Created compute uniform buffer."
 
   pure Dict
 
 initGraphicsDescriptorSetLayout :: (HasDevice, HasGraphicsDescriptorSetLayoutInfo)
                                 => ResIO (Dict HasGraphicsDescriptorSetLayout)
 initGraphicsDescriptorSetLayout = do
-  (_, layout) <- withDescriptorSetLayout ?device ?graphicsDescriptorSetLayoutInfo Nothing allocate
-  let ?graphicsDescriptorSetLayout = layout
+  let ?graphicsDescriptorSetLayout = snd !do
+        withDescriptorSetLayout ?device ?graphicsDescriptorSetLayoutInfo Nothing allocate
   pure Dict
 
 initComputeDescriptorSetLayout :: (HasDevice, HasComputeDescriptorSetLayoutInfo)
                                => ResIO (Dict HasComputeDescriptorSetLayouts)
 initComputeDescriptorSetLayout = do
-  layouts <- forM ?computeDescriptorSetLayoutInfo \layoutInfo ->
-    snd <$> withDescriptorSetLayout ?device layoutInfo Nothing allocate
-  let ?computeDescriptorSetLayouts = layouts
+  let ?computeDescriptorSetLayouts = !do
+        forM ?computeDescriptorSetLayoutInfo \layoutInfo ->
+          snd <$> withDescriptorSetLayout ?device layoutInfo Nothing allocate
   pure Dict
 
 initVertexStorageBuffer :: HasVertexBuffer => ResIO (Dict HasVertexStorageBuffer)
@@ -479,21 +460,20 @@ initVertexStorageBuffer = do
 
 initComputeFences :: HasDevice => ResIO (Dict HasComputeFences)
 initComputeFences = do
-  fences <- both snd <$> bisequence
-    (dupe $ withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate)
-
-  let ?computeFences = fences
+  let ?computeFences = !do
+        both snd <$> bisequence
+          (dupe $ withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate)
   pure Dict
 
 initSyncs :: (HasLogger, HasDevice) => ResIO (Dict HasSyncs)
 initSyncs = do
   (imageAvailable, renderFinished) <- bisequence . dupe . Sized.replicateM $
     snd <$> withSemaphore ?device zero Nothing allocate
-  inFlight <- Sized.replicateM $
-    snd <$> withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate
   let ?imageAvailable = imageAvailable
       ?renderFinished = renderFinished
-      ?inFlight       = inFlight
+      ?inFlight = !do
+        Sized.replicateM $
+          snd <$> withFence ?device zero{flags = FENCE_CREATE_SIGNALED_BIT} Nothing allocate
 
   logDebug "Created syncs."
   pure Dict

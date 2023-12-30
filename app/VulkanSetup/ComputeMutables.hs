@@ -35,8 +35,7 @@ initComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
                        KnownNat ComputeShaderCount, KnownNat ComputeStorageBufferCount)
                      => ResIO (Dict HasComputeMutables)
 initComputeMutables = do
-  computeMutables <- mkMResources =<< constructComputeMutables
-  let ?computeMutables = computeMutables
+  let ?computeMutables = !do mkMResources =<< constructComputeMutables
   pure Dict
 
 constructComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
@@ -45,10 +44,10 @@ constructComputeMutables :: (HasLogger, HasComputeShaderPaths, HasVulkanConfig,
                              KnownNat ComputeShaderCount, KnownNat ComputeStorageBufferCount)
                           => ResIO ([ReleaseKey], ComputeMutables)
 constructComputeMutables = do
-  (layoutKey    , pipelineLayout ) <- constructComputePipelineLayout
-  (pipelineKey  , pipelines      ) <- constructComputePipelines pipelineLayout
-  (dsKey        , descriptorSets ) <- constructDescriptorSets
-  (cmdBufKey    , commandBuffer  ) <- constructCommandBuffer
+  (layoutKey  , pipelineLayout) <- constructComputePipelineLayout
+  (pipelineKey, pipelines     ) <- constructComputePipelines pipelineLayout
+  (dsKey      , descriptorSets) <- constructDescriptorSets
+  (cmdBufKey  , commandBuffer ) <- constructCommandBuffer
 
   pure ([layoutKey, pipelineKey, dsKey, cmdBufKey], MkComputeMutables{..})
 
@@ -137,12 +136,10 @@ constructComputePipelines layout = do
 
       withComputePipelines ?device zero pipelineInfos Nothing allocate
 
-  computePipeline <- case Sized.fromList (toList pipelineList) of
+  case Sized.fromList (toList pipelineList) of
     Just pipelines -> pure (releasePipelines, pipelines)
     (length -> num) -> throw $ VkWrongNumberOfComputePipelines 1 $ fromIntegral num
-
-  logDebug "Created compute pipeline."
-  pure computePipeline
+  <* logDebug "Created compute pipeline."
 
 recreateComputePipeline :: (HasLogger, HasVulkanResources, HasVertexStorageBuffer,
                             KnownNat ComputeShaderCount, KnownNat ComputeStorageBufferCount)

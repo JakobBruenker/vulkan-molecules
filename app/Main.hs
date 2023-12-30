@@ -60,11 +60,8 @@ runApp = runResourceT do
   Dict <- vulkanConfig
   Dict <- initializeVulkan setupGraphicsCommands setupComputeCommands
 
-  killCompute <- newEmptyMVar
-  continueCompute <- newMVar ()
-
-  let ?killCompute = killCompute
-      ?continueCompute = continueCompute
+  let ?killCompute = !newEmptyMVar
+      ?continueCompute = !do newMVar ()
 
   liftIO $ GLFW.setMouseButtonCallback ?window $ Just mouseButtonCallback
   liftIO $ GLFW.setKeyCallback ?window $ Just keyCallback
