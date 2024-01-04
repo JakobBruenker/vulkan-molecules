@@ -193,19 +193,17 @@ data UboData usage = forall a . Storable a => MkUboData { update :: UboInput usa
                                                         }
 data StorageData = forall a n . (KnownNat n, Storable a) => MkStorageData (Sized.Vector n a)
 
-type HasGraphicsPipelineLayoutInfo = ?graphicsPipelineLayoutInfo :: PipelineLayoutCreateInfo
-type HasComputePipelineLayoutInfo  = ?computePipelineLayoutInfo  :: PipelineLayoutCreateInfo
-type HasGraphicsDescriptorSetLayoutInfo =
-  ?graphicsDescriptorSetLayoutInfo :: DescriptorSetLayoutCreateInfo '[]
-type HasComputeDescriptorSetLayoutInfo =
-  ?computeDescriptorSetLayoutInfo :: Vector (DescriptorSetLayoutCreateInfo '[])
-type HasVertexInputInfo = ?vertexInputInfo :: SomeStruct PipelineVertexInputStateCreateInfo
-type HasVertexBufferInfo = ?vertexBufferInfo :: BufferCreateInfo '[]
-type HasVertexData = ?vertexData :: VertexData
-type HasGraphicsUboData = ?graphicsUboData :: UboData Graphics
-type HasComputeUboData = ?computeUboData :: UboData Compute
-type HasComputeStorageData = ?computeStorageData :: Sized'.Vector ComputeStorageBufferCount StorageData
-type HasDesiredSwapchainImageNum = ?desiredSwapchainImageNum :: Natural
+type HasGraphicsPipelineLayoutInfo      = ?graphicsPipelineLayoutInfo      :: PipelineLayoutCreateInfo
+type HasComputePipelineLayoutInfo       = ?computePipelineLayoutInfo       :: PipelineLayoutCreateInfo
+type HasGraphicsDescriptorSetLayoutInfo = ?graphicsDescriptorSetLayoutInfo :: DescriptorSetLayoutCreateInfo '[]
+type HasComputeDescriptorSetLayoutInfo  = ?computeDescriptorSetLayoutInfo  :: Vector (DescriptorSetLayoutCreateInfo '[])
+type HasVertexInputInfo                 = ?vertexInputInfo                 :: SomeStruct PipelineVertexInputStateCreateInfo
+type HasVertexBufferInfo                = ?vertexBufferInfo                :: BufferCreateInfo '[]
+type HasVertexData                      = ?vertexData                      :: VertexData
+type HasGraphicsUboData                 = ?graphicsUboData                 :: UboData Graphics
+type HasComputeUboData                  = ?computeUboData                  :: UboData Compute
+type HasComputeStorageData              = ?computeStorageData              :: Sized'.Vector ComputeStorageBufferCount StorageData
+type HasDesiredSwapchainImageNum        = ?desiredSwapchainImageNum        :: Natural
 type HasVulkanConfig = ( HasGraphicsPipelineLayoutInfo
                        , HasComputePipelineLayoutInfo
                        , HasGraphicsDescriptorSetLayoutInfo
