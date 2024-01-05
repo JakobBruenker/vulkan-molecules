@@ -33,6 +33,7 @@ executable boxticle
                       VulkanSetup.Types.Unsafe
                       VulkanSetup.Utils
                       VulkanConfig.Shaders
+                      VulkanConfig.Shaders.ADiff
                       VulkanConfig.Pipeline
                       VulkanConfig.FIRUtils
                       Utils
