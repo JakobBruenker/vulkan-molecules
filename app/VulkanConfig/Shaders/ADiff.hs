@@ -104,15 +104,9 @@ instance (Ord a, DiffInt a) => Ord (Expr a) where
     (_ :^ _) _ -> LT
     (Ln e1) (Ln e2) -> e1 `compare` e2
     (Ln _) _ -> LT
-    (Sum es1) (Sum es2) -> case compare (length es1) (length es2) of
-      LT -> LT
-      EQ -> compare es1 es2
-      GT -> GT
+    (Sum es1) (Sum es2) -> es1 `compare` es2
     (Sum _) _ -> LT
-    (Product es1) (Product es2) -> case compare (length es1) (length es2) of
-      LT -> LT
-      EQ -> compare es1 es2
-      GT -> GT
+    (Product es1) (Product es2) -> es1 `compare` es2
     (Product _) _ -> LT
 
 instance (DiffInt a, Show a) => Show (Expr a) where
@@ -257,3 +251,4 @@ expr = QuasiQuoter
 --   1. QQ to parse expression: diff "x" [expr| x^2 + y |]
 --   2. differentiate and simplify, grouping constants
 --   3. when generating FIR code, (precompute any constants)
+--   4. instead of requiring the user to define vars, get them from the environment
