@@ -1,4 +1,5 @@
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TemplateHaskellQuotes #-}
 
 module VulkanConfig.Shaders.ADiff where
 
@@ -15,6 +16,9 @@ import Text.Parsec qualified as P
 import Text.Parsec.Expr
 import Text.Parsec.Token qualified as P
 import Text.Parsec.Language (haskellDef)
+
+import Language.Haskell.TH.Quote (QuasiQuoter(..))
+import Language.Haskell.TH
 
 data Expr a where
   (:+), (:*), (:^) :: Expr a -> Expr a -> Expr a
@@ -74,6 +78,9 @@ pattern Product :: DiffInt a => [Expr a] -> Expr a
 pattern Product es <- (toProduct -> Just es)
   where
     Product = maybe (C one) (foldr1 (:*)) . NE.nonEmpty
+
+pattern Neg :: (DiffInt a, Eq a) => Expr a -> Expr a
+pattern Neg e = C NegOne :* e
 
 {-# COMPLETE C, Var, (:^), Ln, Sum, Product #-}
 {-# COMPLETE C, Monomial, (:^), Ln, Sum, Product #-}
@@ -171,7 +178,7 @@ partitionExprs = foldr (flip \(cs, ms, es) -> \case
     e -> (cs, ms, e:es)
   ) ([], [], [])
 
-simplify :: (Num a, DiffInt a, Ord a) => Expr a -> Expr a
+simplify :: (Floating a, DiffInt a, Ord a) => Expr a -> Expr a
 simplify = fst . fromJust . find (uncurry (==)) . (zip <*> tail) . iterate step
   -- simplify until we reach a fixed point
   -- find can never produce `Nothing` here, since it's an infinite list
@@ -193,30 +200,37 @@ simplify = fst . fromJust . find (uncurry (==)) . (zip <*> tail) . iterate step
           ms' = map (\mons@((_, v, _) :| _) -> Monomial (product $ fmap fst3 mons, v, Sum . sort . toList $ fmap (step . thd3) mons)) . NE.groupWith snd3 . sort $ ms
           c' = product cs
 
-      (a :^ b) :^ c -> step a :^ (step b :* step c)
+      C a :^ C b -> C $ a ** b
       _ :^ C Zero -> C one
       a :^ C One -> step a
+      (a :^ b) :^ c -> step a :^ (step b :* step c)
       a :^ b -> step a :^ step b
 
       Ln (C One) -> C zero
+      Ln (C a) -> C $ log a
       Ln (a :^ b) -> step b :* Ln (step a)
       Ln a -> Ln (step a)
 
-parse :: (Eq a, Fractional a, DiffInt a) => String -> Either P.ParseError (Expr a)
-parse = P.parse expr ""
+parse :: String -> Either P.ParseError Exp
+parse = P.parse ex ""
   where
-    expr = buildExpressionParser table term
-    term = parens expr <|> C <$> number <|> Var <$> identifier
+    ex = buildExpressionParser table term
+    term = parens ex <|> appCon 'C <$> number <|> appCon 'Var <$> identifier
     table =
-      [ [prefix "ln" Ln]
-      , [binary "^" (:^) AssocRight]
-      , [binary "*" (:*) AssocLeft, binary "/" (:/) AssocLeft]
-      , [binary "+" (:+) AssocLeft, binary "-" (:-) AssocLeft, prefix "-" (C -1 :*), prefix "+" id]
+      [ [prefix "ln" 'Ln]
+      , [binary "^" '(:^) AssocRight]
+      , [binary "*" '(:*) AssocLeft, binary "/" '(:/) AssocLeft]
+      , [binary "+" '(:+) AssocLeft, binary "-" '(:-) AssocLeft, prefix "-" 'Neg]
       ]
 
-    
-    binary  name fun assoc = flip Infix assoc do {reservedOp name; return fun}
-    prefix  name fun       = Prefix           do {reservedOp name; return fun}
+    appCon con = AppE (ConE con)
+
+    binary name funName assoc = flip Infix assoc do
+      reservedOp name
+      pure \a b -> InfixE (Just a) (ConE funName) (Just b)
+    prefix name funName = Prefix do
+      reservedOp name
+      pure (appCon funName)
 
     lexer = P.makeTokenParser haskellDef
       { P.reservedOpNames = ["+", "-", "*", "/", "^"]
@@ -224,9 +238,17 @@ parse = P.parse expr ""
       }
 
     parens = P.parens lexer
-    number = either fromIntegral realToFrac <$> P.naturalOrFloat lexer
-    identifier = P.identifier lexer
+    number = LitE . either IntegerL (RationalL . toRational) <$> P.naturalOrFloat lexer
+    identifier = LitE . StringL <$> P.identifier lexer
     reservedOp = P.reservedOp lexer
+
+expr :: QuasiQuoter
+expr = QuasiQuoter
+  { quoteExp = either (error . show) pure . parse
+  , quotePat = error "expr must be used as an expression, not a pattern"
+  , quoteType = error "expr must be used as an expression, not a type"
+  , quoteDec = error "expr must be used as an expression, not a declaration"
+  }
 
 -- TODO:
 -- - interface with TH
