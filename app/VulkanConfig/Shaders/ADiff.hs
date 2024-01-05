@@ -19,6 +19,8 @@ import Text.Parsec.Language (haskellDef)
 
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Language.Haskell.TH
+import Control.Monad.Extra (fromMaybeM)
+import Language.Haskell.TH.Syntax (unsafeTExpCoerce)
 
 data Expr a where
   (:+), (:*), (:^) :: Expr a -> Expr a -> Expr a
@@ -206,7 +208,7 @@ simplify = fst . fromJust . find (uncurry (==)) . (zip <*> tail) . iterate step
       Ln a -> Ln (step a)
 
 parse :: String -> Either P.ParseError Exp
-parse = P.parse ex ""
+parse = P.parse (P.spaces *> ex) ""
   where
     ex = buildExpressionParser table term
     term = parens ex <|> appCon 'C <$> number <|> appCon 'Var <$> identifier
@@ -243,6 +245,22 @@ expr = QuasiQuoter
   , quoteType = error "expr must be used as an expression, not a type"
   , quoteDec = error "expr must be used as an expression, not a declaration"
   }
+
+toCode :: Expr Float -> Code Q (FIR.Code Float)
+toCode = \case
+  C a -> [|| FIR.Lit a ||]
+  Var v -> liftCode do
+    name <- fromMaybeM (fail $ "Couldn't find variable " ++ v) (lookupValueName v)
+    ty <- reifyType name
+    when (ty /= ConT ''FIR.Code `AppT` ConT ''Float) do
+      fail $ "Variable " ++ v ++ " has type " ++ show ty ++ ", must be Code Float"
+    unsafeTExpCoerce @_ @(FIR.Code Float) (varE name)
+  a :- b -> [|| $$(toCode a) FIR.- $$(toCode b) ||]
+  a :+ b -> [|| $$(toCode a) FIR.+ $$(toCode b) ||]
+  a :/ b -> [|| $$(toCode a) FIR./ $$(toCode b) ||]
+  a :* b -> [|| $$(toCode a) FIR.* $$(toCode b) ||]
+  a :^ b -> [|| $$(toCode a) FIR.** $$(toCode b) ||]
+  Ln a -> [|| FIR.log $$(toCode a) ||]
 
 -- TODO:
 -- - interface with TH
