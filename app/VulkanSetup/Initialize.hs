@@ -65,7 +65,7 @@ initInstance = do
 
   enabledExtensionNames <- V.fromList <$>
     do liftIO GLFW.getRequiredInstanceExtensions >>= liftIO . mapM B.packCString
-  logDebug $ "Required extensions for GLFW: " <> displayShow enabledExtensionNames
+  logDebug $ "Required instance extensions for GLFW: " <> displayShow enabledExtensionNames
 
   let applicationInfo = Just (zero{apiVersion = MAKE_API_VERSION 1 2 0} :: ApplicationInfo)
       instanceCreateInfo = zero{ applicationInfo
