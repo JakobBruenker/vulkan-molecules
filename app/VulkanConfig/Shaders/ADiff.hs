@@ -23,8 +23,8 @@ import Control.Monad.Extra (fromMaybeM)
 import Language.Haskell.TH.Syntax (unsafeTExpCoerce)
 
 data Expr a where
-  (:+), (:*), (:^) :: Expr a -> Expr a -> Expr a
-  Ln :: Expr a -> Expr a
+  (:+), (:*), (:**) :: Expr a -> Expr a -> Expr a
+  Log :: Expr a -> Expr a
   C :: a -> Expr a
   Var :: String -> Expr a
   deriving Eq
@@ -35,19 +35,19 @@ pattern e1 :- e2 <- e1 :+ C ((== negOne) -> True) :* e2
     e1 :- e2 = e1 :+ C negOne :* e2
 
 pattern (:/) :: (Eq a, DiffInt a) => Expr a -> Expr a -> Expr a
-pattern e1 :/ e2 <- e1 :* e2 :^ C ((== negOne) -> True)
+pattern e1 :/ e2 <- e1 :* e2 :** C ((== negOne) -> True)
   where
-    e1 :/ e2 = e1 :* e2 :^ C negOne
+    e1 :/ e2 = e1 :* e2 :** C negOne
 
 infixl 6 :+, :-
 infixl 7 :*, :/
-infixr 8 :^
+infixr 8 :**
 
 toMonomial :: DiffInt a => Expr a -> Maybe (a, String, Expr a)
 toMonomial = \case
   C a :* Var v -> Just (a, v, C one)
-  C a :* Var v :^ b -> Just (a, v, b)
-  Var v :^ b -> Just (one, v, b)
+  C a :* Var v :** b -> Just (a, v, b)
+  Var v :** b -> Just (one, v, b)
   Var v -> Just (one, v, C one)
   _ -> Nothing
 
@@ -57,9 +57,9 @@ pattern Monomial e <- (toMonomial -> Just e)
     Monomial = \case
       (Zero, _, _    ) -> C zero
       (One , v, C One) ->        Var v
-      (One , v, b    ) ->        Var v :^ b
+      (One , v, b    ) ->        Var v :** b
       (a   , v, C One) -> C a :* Var v
-      (a   , v, b    ) -> C a :* Var v :^ b
+      (a   , v, b    ) -> C a :* Var v :** b
 
 toSum :: Expr a -> Maybe [Expr a]
 toSum = \case
@@ -84,8 +84,8 @@ pattern Product es <- (toProduct -> Just es)
 pattern Neg :: (DiffInt a, Eq a) => Expr a -> Expr a
 pattern Neg e = C NegOne :* e
 
-{-# COMPLETE C, Var, (:^), Ln, Sum, Product #-}
-{-# COMPLETE C, Monomial, (:^), Ln, Sum, Product #-}
+{-# COMPLETE C, Var, (:**), Log, Sum, Product #-}
+{-# COMPLETE C, Monomial, (:**), Log, Sum, Product #-}
 
 instance (Ord a, DiffInt a) => Ord (Expr a) where
   compare = \cases
@@ -99,13 +99,13 @@ instance (Ord a, DiffInt a) => Ord (Expr a) where
         GT -> GT
       GT -> GT
     (Monomial _) _ -> LT
-    (e1 :^ e2) (e3 :^ e4) -> case compare e1 e3 of
+    (e1 :** e2) (e3 :** e4) -> case compare e1 e3 of
       LT -> LT
       EQ -> e2 `compare` e4
       GT -> GT
-    (_ :^ _) _ -> LT
-    (Ln e1) (Ln e2) -> e1 `compare` e2
-    (Ln _) _ -> LT
+    (_ :** _) _ -> LT
+    (Log e1) (Log e2) -> e1 `compare` e2
+    (Log _) _ -> LT
     (Sum es1) (Sum es2) -> es1 `compare` es2
     (Sum _) _ -> LT
     (Product es1) (Product es2) -> es1 `compare` es2
@@ -117,8 +117,8 @@ instance (DiffInt a, Show a) => Show (Expr a) where
     Var v -> v
     Sum es -> "(" ++ intercalate " + " (show <$> es) ++ ")"
     Product es -> "(" ++ intercalate " * " (show <$> es) ++ ")"
-    e1 :^ e2 -> "(" ++ show e1 ++ " ^ " ++ show e2 ++ ")"
-    Ln e -> "ln " ++ show e
+    e1 :** e2 -> "(" ++ show e1 ++ " ** " ++ show e2 ++ ")"
+    Log e -> "ln " ++ show e
 
 instance IsString (Expr a) where
   fromString = Var
@@ -164,8 +164,8 @@ diff v = \case
   Var v' -> C $ if v == v' then one else zero
   e1 :+ e2 -> diff v e1 :+ diff v e2
   e1 :* e2 -> e1 :* diff v e2 :+ diff v e1 :* e2
-  e1 :^ e2 -> e1 :^ e2 :* (diff v e2 :* Ln e1 :+ e2 :* diff v e1 :/ e1)
-  Ln e -> diff v e :/ e
+  e1 :** e2 -> e1 :** e2 :* (diff v e2 :* Log e1 :+ e2 :* diff v e1 :/ e1)
+  Log e -> diff v e :/ e
 
 partitionExprs :: (DiffInt a, Eq a) => [Expr a] -> ([a], [(a, String, Expr a)], [Expr a])
 partitionExprs = foldr (flip \(cs, ms, es) -> \case
@@ -196,16 +196,16 @@ simplify = fst . fromJust . find (uncurry (==)) . (zip <*> tail) . iterate step
           ms' = map (\mons@((_, v, _) :| _) -> Monomial (product $ fmap fst3 mons, v, Sum . sort . toList $ fmap (step . thd3) mons)) . NE.groupWith snd3 . sort $ ms
           c' = product cs
 
-      C a :^ C b -> C $ a ** b
-      _ :^ C Zero -> C one
-      a :^ C One -> step a
-      (a :^ b) :^ c -> step a :^ (step b :* step c)
-      a :^ b -> step a :^ step b
+      C a :** C b -> C $ a ** b
+      _ :** C Zero -> C one
+      a :** C One -> step a
+      (a :** b) :** c -> step a :** (step b :* step c)
+      a :** b -> step a :** step b
 
-      Ln (C One) -> C zero
-      Ln (C a) -> C $ log a
-      Ln (a :^ b) -> step b :* Ln (step a)
-      Ln a -> Ln (step a)
+      Log (C One) -> C zero
+      Log (C a) -> C $ log a
+      Log (a :** b) -> step b :* Log (step a)
+      Log a -> Log (step a)
 
 parse :: String -> Either P.ParseError Exp
 parse = P.parse (P.spaces *> ex) ""
@@ -213,8 +213,8 @@ parse = P.parse (P.spaces *> ex) ""
     ex = buildExpressionParser table term
     term = parens ex <|> appCon 'C <$> number <|> appCon 'Var <$> identifier
     table =
-      [ [prefix "ln" 'Ln]
-      , [binary "^" '(:^) AssocRight]
+      [ [prefix "ln" 'Log]
+      , [binary "**" '(:**) AssocRight]
       , [binary "*" '(:*) AssocLeft, binary "/" '(:/) AssocLeft]
       , [binary "+" '(:+) AssocLeft, binary "-" '(:-) AssocLeft, prefix "-" 'Neg]
       ]
@@ -229,7 +229,7 @@ parse = P.parse (P.spaces *> ex) ""
       pure (appCon funName)
 
     lexer = P.makeTokenParser haskellDef
-      { P.reservedOpNames = ["+", "-", "*", "/", "^"]
+      { P.reservedOpNames = ["+", "-", "*", "/", "**"]
       , P.reservedNames = ["ln"]
       }
 
@@ -259,14 +259,5 @@ toCode = \case
   a :+ b -> [|| $$(toCode a) FIR.+ $$(toCode b) ||]
   a :/ b -> [|| $$(toCode a) FIR./ $$(toCode b) ||]
   a :* b -> [|| $$(toCode a) FIR.* $$(toCode b) ||]
-  a :^ b -> [|| $$(toCode a) FIR.** $$(toCode b) ||]
-  Ln a -> [|| FIR.log $$(toCode a) ||]
-
--- TODO:
--- - interface with TH
--- - common subexpression elimination
--- - Plan:
---   1. QQ to parse expression: diff "x" [expr| x^2 + y |]
---   2. differentiate and simplify, grouping constants
---   3. when generating FIR code, (precompute any constants)
---   4. instead of requiring the user to define vars, get them from the environment
+  a :** b -> [|| $$(toCode a) FIR.** $$(toCode b) ||]
+  Log a -> [|| FIR.log $$(toCode a) ||]
