@@ -1,6 +1,8 @@
 {-# LANGUAGE RebindableSyntax #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE OverloadedRecordUpdate #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 {-# OPTIONS_GHC -Wno-unused-do-bind #-}
@@ -26,6 +28,8 @@ import RIO.FilePath ((</>))
 import VulkanSetup.Types
 import VulkanConfig.FIRUtils ()
 import VulkanConfig.Pipeline (numVertices)
+import VulkanConfig.Shaders.ADiff hiding (Vec2)
+import VulkanConfig.Shaders.Equations qualified as E
 
 -- Boltzmann constant in eV*K^-1
 kB :: Float
@@ -224,7 +228,7 @@ updateAcc = Module $ entryPoint @"main" @Compute do
 
     -- assign @(Name "accel'" :.: Ar :.: Ix :.: Swizzle "xy") gid ((forceLJ ^+^ forceE) ^/ m)
 
-    let fbo' r pa pb ro = exp (pa * (r / ro)**pb)
+    let fbo' r pa pb ro = $$(simpleCode E.fbo')
 
     #j #= 0
 
