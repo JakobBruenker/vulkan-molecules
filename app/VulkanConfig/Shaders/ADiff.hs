@@ -202,13 +202,15 @@ type family DimConst d a where
   DimConst Scalar a = a
   DimConst Vector2 a = (a, a)
 
-partitionExprs :: (KnownDim d, Num a, Eq a) => [Expr d a] -> ([DimConst d a], [(a, String, Maybe (d :~: Scalar, Expr d a))], [Expr d a])
-partitionExprs = foldr (flip \(cs, ms, es) -> \case
-    C a -> (a:cs, ms, es)
-    Vec2 (C a) (C b) -> ((a, b):cs, ms, es)
-    Monomial a v p -> (cs, (a, v, p):ms, es)
-    e -> (cs, ms, e:es)
-  ) ([], [], [])
+partitionExprs :: (KnownDim d, Num a, Eq a) => [Expr d a] -> ([a], [(a, String, Maybe (d :~: Scalar, Expr d a))], [Expr d a], Maybe (d :~: Vector2, [(Expr Scalar a, Expr Scalar a)]))
+partitionExprs = foldr (flip \(cs, ms, es, vs) -> \case
+    C a -> (a:cs, ms, es, vs)
+    Vec2 a b -> (cs, ms, es, case vs of
+      Nothing -> Just (Refl, [(a, b)])
+      Just vs' -> Just $ ((a, b):) <$> vs')
+    Monomial a v p -> (cs, (a, v, p):ms, es, vs)
+    e -> (cs, ms, e:es, vs)
+  ) ([], [], [], Nothing)
 
 constant :: forall d a . (KnownDim d) => a -> Expr d a
 constant (C -> x) = case sDim @d of
@@ -227,20 +229,24 @@ simplify = fst . fromJust . find (uncurry (==)) . (zip <*> tail) . iterate step
 
       Monomial a v p -> Monomial a v (fmap step <$> p)
 
-      Sum es -> Sum $ concat [[c' | c' /= constant 0], ms', sort $ map step es']
+      Sum es -> Sum $ concat [c', ms', sort $ map step es']
         where
-          (cs, ms, es') = partitionExprs es
+          (cs, ms, es', vs) = partitionExprs es
           ms' = map (\mons@((_, v, p) :| _) -> Monomial (sum $ fmap fst3 mons) v (fmap step <$> p)) . NE.groupWith (\(_, v, p) -> (v, p)) . sort $ ms
+          c' :: [Expr d' a]
           c' = case sDim @d' of
-            SScalar -> C (L.sum cs)
-            SVector2 -> uncurry Vec2 . join bimap (C . L.sum) . unzip $ cs
+            SScalar | s <- C (L.sum cs) -> [s | s /= constant 0]
+            SVector2 -> maybe [] pure $ find (/= Vec2 (C 0) (C 0)) vs'
+          vs' = uncurry Vec2 . join bimap (step . Sum) . unzip . snd <$> vs
 
+      a :* Vec2 b (C 0) -> Vec2 (step (a :* b)) (C 0)
+      a :* Vec2 (C 0) b -> Vec2 (C 0) (step (a :* b))
       Product es last -> if isZero then constant 0 else Product (concat [[C c' | c' /= 1], ms', sort $ map step es']) last'
         where
           (isZero, last') = case sDim @d' of
             SScalar -> (c' == 0, ())
             SVector2 -> (last == Vec2 (C 0) (C 0), step last)
-          (cs, ms, es') = partitionExprs es
+          (cs, ms, es', _impossible) = partitionExprs es
           ms' = map (\mons@((_, v, _) :| _) -> Monomial (product $ fmap fst3 mons) v (Just (Refl, Sum . sort . toList $ fmap (maybe (C 1) (step . snd) . thd3) mons))) .
                 NE.groupWith snd3 .
                 sort $ ms
@@ -274,7 +280,14 @@ simplify = fst . fromJust . find (uncurry (==)) . (zip <*> tail) . iterate step
       Prj2 (Vec2 _ b) -> step b
       Prj2 a -> Prj2 (step a)
 
+      Vec2 (extractConst -> Just (a, a')) (extractConst -> Just (b, b')) | a == b -> C a :* Vec2 a' b'
       Vec2 a b -> Vec2 (step a) (step b)
+      where
+        extractConst :: Expr Scalar a -> Maybe (a, Expr Scalar a)
+        extractConst = \case
+          C a -> Just (a, C 1)
+          C a :* a' -> Just (a, a')
+          _ -> Nothing
 
 parse :: String -> Either P.ParseError Exp
 parse = P.parse (P.spaces *> ex) ""
