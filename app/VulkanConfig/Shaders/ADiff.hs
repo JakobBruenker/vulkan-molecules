@@ -5,15 +5,19 @@
 module VulkanConfig.Shaders.ADiff where
 
 import RIO
-import RIO.List (iterate, unzip)
-import RIO.List.Partial (tail, foldr1)
+import RIO.List (unzip)
+import RIO.List.Partial (foldr1)
+import RIO.Map qualified as M
+import Data.Bimap (Bimap)
+import Data.Bimap qualified as BM
 import RIO.NonEmpty qualified as NE
 
+import Data.Coerce (coerce)
+import Data.Monoid qualified as Monoid
 import Control.Monad.Extra (fromMaybeM)
 import Data.List (find, intercalate, sort)
 import FIR qualified
 import VulkanConfig.FIRUtils ()
-import Data.Maybe (fromJust)
 import Data.Tuple.Extra (fst3, thd3, snd3)
 import Text.Parsec qualified as P
 import Text.Parsec.Expr
@@ -217,11 +221,12 @@ constant (C -> x) = case sDim @d of
   SScalar -> x
   SVector2 -> Vec2 x x
 
+repeatUntilFixpoint :: Eq a => (a -> a) -> a -> a
+repeatUntilFixpoint f x = let x' = f x in if x == x' then x else repeatUntilFixpoint f x'
+
 simplify :: forall a d . (KnownDim d, FIR.AdditiveGroup a, Ord a, Floating a)
          => Expr d a -> Expr d a
-simplify = fst . fromJust . find (uncurry (==)) . (zip <*> tail) . iterate step
-  -- simplify until we reach a fixed point
-  -- find can never produce `Nothing` here, since it's an infinite list
+simplify = repeatUntilFixpoint step
   where
     step :: forall d' . (KnownDim d') => Expr d' a -> Expr d' a
     step = \case
@@ -289,6 +294,103 @@ simplify = fst . fromJust . find (uncurry (==)) . (zip <*> tail) . iterate step
           C a :* a' -> Just (a, a')
           _ -> Nothing
 
+-- XXX JB obviously this should already get the stringified Map
+substitute :: forall d a . (KnownDim d, Ord a, Num a, Show a) => Bimap (Expr Vector2 a) String -> Bimap (Expr Scalar a) String -> Expr d a -> Expr d a
+substitute vs ss = \case
+  C a -> C a
+  Var v -> fromMaybe (Var v) $ BM.lookupR v case sDim @d of
+    SScalar -> ss
+    SVector2 -> vs
+  E -> E
+  Log a -> Log (substitute vs ss a)
+  a :+ b -> substitute vs ss a :+ substitute vs ss b
+  a :* b -> substitute vs ss a :* substitute vs ss b
+  a :** b -> substitute vs ss a :** substitute vs ss b
+  Prj1 v -> Prj1 (substitute vs ss v)
+  Prj2 v -> Prj2 (substitute vs ss v)
+  Vec2 a b -> Vec2 (substitute vs ss a) (substitute vs ss b)
+
+-- XXX JB plan:
+-- - simplify
+-- - extract sub exprs
+-- - simplify both expr and sub exprs (including extracting sub exprs etc.)
+-- - substitute
+-- - repeat until nothing changes
+
+createBimap :: (Ord a, KnownDim d, Num a, Show a) => [Expr d a] -> Bimap (Expr d a) String
+createBimap = BM.fromList . map (id &&& show)
+
+
+-- first try topmost
+-- keep track of how many substs there are
+-- if any gets replace as many times as it exists, remove it from list
+-- simplify - if something changes, start over
+-- otherwise, substitute, and then replace again with the rest, until nothing is left in the map
+extractSubExprs :: forall d a . (KnownDim d, Ord a, Num a, Show a) => Expr d a -> (Map (Expr Vector2 a) Natural, Map (Expr Scalar a) Natural, Expr d a)
+extractSubExprs ex = (vectorCounts, scalarCounts, replaceTopMost ex)
+  where
+    -- simplifyBySubExpr :: forall d' . KnownDim d' => Map (Expr Vector2 a) Natural -> Map (Expr Scalar a) Natural -> Expr d' a -> Expr d' a
+    -- simplifyBySubExpr vs ss e
+    --   | M.null vs, M.null ss = e
+    --   | otherwise = 
+
+    replaceTopMost :: forall d' . KnownDim d' => Expr d' a -> Expr d' a
+    replaceTopMost e = flip fromMaybe (Var <$> replace e) case e of
+      C a -> C a
+      Var v -> Var v
+      E -> E
+      Log a -> Log (replaceTopMost a)
+      e1 :+ e2 -> replaceTopMost e1 :+ replaceTopMost e2
+      e1 :* e2 -> replaceTopMost e1 :* replaceTopMost e2
+      e1 :** e2 -> replaceTopMost e1 :** replaceTopMost e2
+      Prj1 v -> Prj1 (replaceTopMost v)
+      Prj2 v -> Prj2 (replaceTopMost v)
+      Vec2 e1 e2 -> Vec2 (replaceTopMost e1) (replaceTopMost e2)
+    
+    replace :: forall d' . KnownDim d' => Expr d' a -> Maybe String
+    replace e = BM.lookup e strings <* (find @_ @Natural (>= 2) $ M.lookup e counts)
+      where
+        (counts, strings) = case sDim @d' of
+          SScalar -> (filteredScalarCounts, scalarStrings)
+          SVector2 -> (filteredVectorCounts, vectorStrings)
+    
+    vectorCounts :: Map (Expr Vector2 a) Natural
+    scalarCounts :: Map (Expr Scalar a) Natural
+    (vectorCounts, scalarCounts) = coerce $ exprMap ex
+
+    filteredVectorCounts :: Map (Expr Vector2 a) Natural
+    filteredVectorCounts = M.filter (>= 2) vectorCounts
+
+    filteredScalarCounts :: Map (Expr Scalar a) Natural
+    filteredScalarCounts = M.filter (>= 2) scalarCounts
+
+    vectorStrings :: BM.Bimap (Expr Vector2 a) String
+    vectorStrings = createBimap $ M.keys vectorCounts
+
+    scalarStrings :: BM.Bimap (Expr Scalar a) String
+    scalarStrings = createBimap $ M.keys scalarCounts
+
+    exprMap :: forall d' . KnownDim d' => Expr d' a -> (Map (Expr Vector2 a) (Monoid.Sum Natural), Map (Expr Scalar a) (Monoid.Sum Natural))
+    exprMap e =
+      let current = M.singleton e (Monoid.Sum @Natural 1)
+          maps :: (Map (Expr Vector2 a) (Monoid.Sum Natural), Map (Expr Scalar a) (Monoid.Sum Natural))
+          maps = case sDim @d' of
+            SScalar -> (mempty, current)
+            SVector2 -> (current, mempty)
+      in case e of
+        C _ -> (mempty, mempty)
+        Var _ -> (mempty, mempty)
+        E -> (mempty, mempty)
+        Log e' -> maps <.> exprMap e'
+        e1 :+ e2 -> maps <.> exprMap e1 <.> exprMap e2
+        e1 :* e2 -> maps <.> exprMap e1 <.> exprMap e2
+        e1 :** e2 -> maps <.> exprMap e1 <.> exprMap e2
+        Prj1 e' -> maps <.> exprMap e'
+        Prj2 e' -> maps <.> exprMap e'
+        Vec2 e1 e2 -> maps <.> exprMap e1 <.> exprMap e2
+    
+    (a, b) <.> (c, d) = (M.unionWith (<>) a c, M.unionWith (<>) b d)
+
 parse :: String -> Either P.ParseError Exp
 parse = P.parse (P.spaces *> ex) ""
   where
@@ -347,7 +449,7 @@ toCode = case sDim @d of
       ty <- reifyType name
       when (ty /= ConT ''FIR.Code `AppT` ConT ''Float) do
         fail $ "Variable " ++ v ++ " has type " ++ show ty ++ ", must be Code Float"
-      unsafeTExpCoerce @_ @(FIR.Code Float) (varE name)
+      unsafeTExpCoerce (varE name)
     a :- b -> [|| $$(toCode a) FIR.- $$(toCode b) ||]
     a :+ b -> [|| $$(toCode a) FIR.+ $$(toCode b) ||]
     a :/ b -> [|| $$(toCode a) FIR./ $$(toCode b) ||]
@@ -365,7 +467,7 @@ toCode = case sDim @d of
       ty <- reifyType name
       when (ty /= ConT ''FIR.Code `AppT` (ConT ''L.V `AppT` LitT (NumTyLit 2) `AppT` ConT ''Float)) do
         fail $ "Variable " ++ v ++ " has type " ++ show ty ++ ", must be Code (V 2 Float)"
-      unsafeTExpCoerce @_ @(FIR.Code (L.V 2 Float)) (varE name)
+      unsafeTExpCoerce (varE name)
     a :- b -> [|| $$(toCode a) L.^-^ $$(toCode b) ||]
     a :+ b -> [|| $$(toCode a) L.^+^ $$(toCode b) ||]
     a :* b -> [|| $$(toCode a) L.*^  $$(toCode b) ||]

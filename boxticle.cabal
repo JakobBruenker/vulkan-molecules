@@ -61,6 +61,7 @@ executable boxticle
                       , haskus-utils-variant ^>= 3.2.1
                       , monadic-bang ^>= 0.2.1
                       , parsec ^>= 3.1.17
+                      , bimap ^>= 0.5
     hs-source-dirs:     app
     default-language:   GHC2021
     ghc-options:        -Wall
